@@ -1,0 +1,22 @@
+{
+  "name": "worldsignals",
+  "version": "0.1.0",
+  "description": "WorldSignals for code and AI agents: real-world events (new companies, tenders, vulnerabilities, outages, AI models) as one standard stream. Command line tool now; SDK and MCP server next.",
+  "type": "module",
+  "bin": {
+    "worldsignals": "bin/ws.mjs",
+    "ws": "bin/ws.mjs"
+  },
+  "files": ["bin", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check bin/ws.mjs && node --test test/*.test.mjs"
+  },
+  "keywords": ["events", "cloudevents", "ai-agents", "agents", "mcp", "companies", "tenders", "cve", "vulnerabilities", "outages", "webhooks", "cli"],
+  "homepage": "https://worldsignals.io/docs#cli",
+  "repository": { "type": "git", "url": "git+https://github.com/Yumankind/worldsignals-js.git" },
+  "bugs": { "url": "https://github.com/Yumankind/worldsignals-js/issues" },
+  "author": "Yumankind OÜ <hello@worldsignals.io> (https://worldsignals.io)",
+  "license": "MIT"
+}
