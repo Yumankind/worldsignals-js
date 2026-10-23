@@ -1,5 +1,7 @@
 # worldsignals
 
+[![npm](https://img.shields.io/npm/v/worldsignals)](https://www.npmjs.com/package/worldsignals) [![tests](https://github.com/Yumankind/worldsignals-js/actions/workflows/test.yml/badge.svg)](https://github.com/Yumankind/worldsignals-js/actions/workflows/test.yml) [![MIT](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
+
 Real-world events for code and AI agents: new companies, public tenders, vulnerabilities and exploits,
 service outages, package releases, AI model launches and price changes, data breach notices, and more,
 as one standard event stream. See [worldsignals.dev](https://worldsignals.dev).
@@ -92,8 +94,9 @@ npx worldsignals watch --type software.released --agent codex --batch
 | `--from now\|start\|<number>` | Where to begin instead |
 
 Events are handled one after another, oldest first, at least once: the place is saved only after the
-program or agent finishes. More, with a guide per agent, in the
-[docs](https://worldsignals.dev/docs#agent-guides).
+program or agent finishes. For AI agents, use `--batch` or `--out`: one run that sees related events
+together costs less and decides better than a run per event. The
+[docs](https://worldsignals.dev/docs#delivery-modes) show the difference, with a guide per agent.
 
 ## Safety
 
