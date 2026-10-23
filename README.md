@@ -49,6 +49,23 @@ number to ask from next time. `--after <time>` shows the newest events first see
 
 `WS_API` points the tool at another server, for testing.
 
+## Filters
+
+`events` and `watch` both narrow events beyond type and country. Values in one filter are
+alternatives; different filters all apply.
+
+| Option | Meaning |
+| --- | --- |
+| `--platform` | Operating systems: `windows`, `macos`, `linux`, `android`, `ios`, `chromeos`, `freebsd` |
+| `--ecosystem` | Package registries, for languages: `npm`, `pypi`, `maven`, `nuget`, `go`, `rubygems`, `crates`, `packagist`, `pub`, `hex`, `swift`, `cocoapods`, `github_actions`, `wordpress` |
+| `--tag` | Any of these tags, e.g. `critical,ransomware` |
+| `--where` | A field condition: path, operator (`=` `!=` `>` `>=` `<` `<=`), value; `\|` between values. Repeat for more |
+
+```sh
+npx worldsignals events --type vulnerability.published --platform windows --where 'data.cvss.severity=critical|high'
+npx worldsignals watch --type vulnerability.advisory_published --ecosystem pypi --agent claude
+```
+
 ## Watch live
 
 `watch` stays connected and handles each event as it arrives. It remembers the number of the last event

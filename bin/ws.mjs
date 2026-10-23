@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.io";
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.0";
 
 const HELP = `worldsignals ${VERSION}, the WorldSignals command line tool (also installed as ws;
 run it with npx worldsignals, or node ws.mjs from https://worldsignals.io/cli/ws.mjs)
@@ -41,12 +41,21 @@ Usage:
       --after <number>  the events stored after that event number, oldest first: poll with it.
                         Without --json the last line says the number to ask from next time.
       --after <time>    the newest events first seen after that time.
+      Filters (also for ws watch):
+      --platform <list>   operating systems: windows, macos, linux, android, ios, chromeos, freebsd
+      --ecosystem <list>  package registries, for languages: npm, pypi, maven, nuget, go, rubygems,
+                          crates, packagist, pub, hex, swift, cocoapods, github_actions, wordpress
+      --tag <list>        any of these tags, e.g. critical,ransomware
+      --where <condition> a field condition; repeat for more, all must hold. Operators = != > >= < <=,
+                          | between values for = and !=: --where 'data.cvss.base_score>=9'
+                          --where 'data.cvss.severity=critical|high'
 
   ws watch [options] [-- <arguments for the program or agent>]
       Stay connected and handle each new event as it arrives. Picks up where it stopped last time,
       even after the computer slept or the network dropped. Needs the access key.
       --type <ids>       event types (default: the ones you chose when signing up)
       --country <codes>  ISO codes; events about the whole world always come too (default: your choice)
+      --platform, --ecosystem, --tag, --where   the filters above
       With no action it prints one standard event per line (JSON). Actions:
       --exec <program>   run it for each event, with the event as JSON on stdin; never through a shell
       --agent <name>     start claude (claude -p) or codex (codex exec) with the event, quoted as data
@@ -64,6 +73,18 @@ Environment:
   WS_API   server to talk to (default ${DEFAULT_API})
   WS_KEY   your access key, from signing up
 `;
+
+/** Options that narrow events beyond type and country; the same for ws events and ws watch. */
+const FILTER_OPTIONS = { tag: { type: "string" }, platform: { type: "string" }, ecosystem: { type: "string" }, where: { type: "string", multiple: true } };
+
+/** Adds the filter options to query parameters, as /api/events and /api/stream read them. */
+export function addFilters(params, values) {
+  if (values.tag) params.set("tags", values.tag);
+  if (values.platform) params.set("platforms", values.platform.toLowerCase());
+  if (values.ecosystem) params.set("ecosystems", values.ecosystem.toLowerCase());
+  for (const w of values.where ?? []) params.append("where", w);
+  return params;
+}
 
 const list = (value) => (value ? value.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
 
@@ -156,7 +177,7 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
   if (command === "events") {
     const { values } = parseArgs({
       args: rest,
-      options: { type: { type: "string" }, country: { type: "string" }, after: { type: "string" }, limit: { type: "string" }, json: { type: "boolean" }, key: { type: "string" } },
+      options: { type: { type: "string" }, country: { type: "string" }, after: { type: "string" }, limit: { type: "string" }, json: { type: "boolean" }, key: { type: "string" }, ...FILTER_OPTIONS },
     });
     const key = values.key ?? env.WS_KEY;
     if (!key) {
@@ -166,12 +187,14 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
     const params = new URLSearchParams();
     if (values.type) params.set("types", values.type);
     if (values.country) params.set("country", values.country.toUpperCase());
+    addFilters(params, values);
     if (values.after) params.set("after", values.after);
     params.set("limit", values.limit ?? "20");
     const res = await fetch(`${api}/api/events?${params}`, { headers: { "user-agent": "ws-cli/1", authorization: `Bearer ${key}` } });
     if (!res.ok) {
-      err(res.status === 401 ? "That access key isn't valid. Sign up again with the same email to get it back." : `Couldn't read events (${res.status}).`);
-      return 1;
+      const reason = res.status === 400 ? (await res.json().catch(() => ({}))).error : null;
+      err(res.status === 401 ? "That access key isn't valid. Sign up again with the same email to get it back." : reason ? `ws events: ${reason}` : `Couldn't read events (${res.status}).`);
+      return res.status === 400 ? 2 : 1;
     }
     const { events, cursor } = await res.json();
     if (values.json) {
@@ -298,7 +321,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal }) {
     args: rest,
     allowPositionals: true,
     options: {
-      type: str, country: str, key: str, from: str, state: str, exec: str, agent: str, prompt: str, out: str, timeout: str,
+      type: str, country: str, key: str, from: str, state: str, exec: str, agent: str, prompt: str, out: str, timeout: str, ...FILTER_OPTIONS,
       "batch-idle": str, "batch-max-wait": str, "batch-max": str, batch: { type: "boolean" }, once: { type: "boolean" },
     },
   });
@@ -400,6 +423,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal }) {
   const params = new URLSearchParams();
   if (values.type) params.set("types", values.type);
   if (values.country) params.set("countries", values.country.toUpperCase());
+  addFilters(params, values);
   let after = values.from === "start" ? 0 : values.from === "now" ? null : values.from ? Number(values.from) : loadCursor(statePath);
   let backoff = 1000;
   let announced = false;

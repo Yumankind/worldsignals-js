@@ -84,6 +84,16 @@ test("moves past numbers the server says didn't match, so a rare filter doesn't 
   assert.equal(JSON.parse(readFileSync(batchState, "utf8")).after, 14);
 });
 
+test("filters go to the stream as query parameters", async () => {
+  const server = fakeStream(sse(ready(1), HB));
+  await run(["watch", "--once", "--state", join(tmp(), "s.json"), "--type", "vulnerability.published", "--platform", "Windows,linux", "--ecosystem", "pypi", "--tag", "critical", "--where", "data.cvss.base_score>=9", "--where", "data.cvss.severity=critical|high"], { fetch: server.fetch, env, ...capture() });
+  const url = new URL(server.calls[0].url);
+  assert.equal(url.searchParams.get("platforms"), "windows,linux");
+  assert.equal(url.searchParams.get("ecosystems"), "pypi");
+  assert.equal(url.searchParams.get("tags"), "critical");
+  assert.deepEqual(url.searchParams.getAll("where"), ["data.cvss.base_score>=9", "data.cvss.severity=critical|high"]);
+});
+
 test("prints each event as a line of JSON and saves where it got to", async () => {
   const dir = tmp();
   const state = join(dir, "watch.json");

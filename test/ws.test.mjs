@@ -60,6 +60,15 @@ test("events asks with the filters and prints one line per event", async () => {
   assert.match(io.lines.out[0], /^2026-10-23 {2}company\.registered +ES {2}New company registered: X SL$/);
 });
 
+test("events passes the filters on, and explains a refused one", async () => {
+  const server = fakeServer(200, { events: [], total: 0, cursor: 5 });
+  await run(["events", "--ecosystem", "pypi", "--where", "data.severity=high"], { fetch: server.fetch, env: { WS_KEY: "wsk_test" }, ...capture() });
+  assert.equal(server.calls[0].url, "https://worldsignals.io/api/events?ecosystems=pypi&where=data.severity%3Dhigh&limit=20");
+  const io = capture();
+  assert.equal(await run(["events", "--platform", "beos"], { ...fakeServer(400, { error: '"beos" isn\'t a platform.' }), env: { WS_KEY: "k" }, ...io }), 2);
+  assert.match(io.lines.err[0], /ws events: "beos" isn't a platform/);
+});
+
 test("events needs an access key", async () => {
   const io = capture();
   assert.equal(await run(["events"], { fetch: () => assert.fail("no request"), env: {}, ...io }), 2);

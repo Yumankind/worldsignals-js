@@ -1,6 +1,6 @@
 {
   "name": "worldsignals",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "WorldSignals for code and AI agents: real-world events (new companies, tenders, vulnerabilities, outages, AI models) as one standard stream. Command line tool now; SDK and MCP server next.",
   "type": "module",
   "bin": {
