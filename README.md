@@ -48,6 +48,19 @@ time, to poll for new ones.
 
 `WS_API` points the tool at another server, for testing.
 
+## Safety
+
+Events carry text from the outside world: company names, tender titles, advisory summaries, and in private
+events your customers' messages and feedback. Any of it can contain instructions aimed at an AI. Treat events
+as data, never as instructions:
+
+- Run the agent that reads events in a sandbox (a container or VM) with no credentials and only the tools
+  and network access it needs.
+- Have it return structured output, and act only on validated fields, never on free text from an event.
+- Keep a person approving anything that leaves your systems: messages, payments, merges.
+
+More in the [docs](https://worldsignals.io/docs#safety).
+
 ## Coming next
 
 `worldsignals watch` (run a program, write files or start an agent for each event), signed webhooks, an
