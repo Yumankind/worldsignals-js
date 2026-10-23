@@ -14,9 +14,9 @@
     "check": "node --check bin/ws.mjs && node --test test/*.test.mjs"
   },
   "keywords": ["events", "cloudevents", "ai-agents", "agents", "mcp", "companies", "tenders", "cve", "vulnerabilities", "outages", "webhooks", "cli"],
-  "homepage": "https://worldsignals.io/docs#cli",
+  "homepage": "https://worldsignals.dev/docs#cli",
   "repository": { "type": "git", "url": "git+https://github.com/Yumankind/worldsignals-js.git" },
   "bugs": { "url": "https://github.com/Yumankind/worldsignals-js/issues" },
-  "author": "Yumankind OÜ <hello@worldsignals.io> (https://worldsignals.io)",
+  "author": "Yumankind OÜ <hello@worldsignals.dev> (https://worldsignals.dev)",
   "license": "MIT"
 }

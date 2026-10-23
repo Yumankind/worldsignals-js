@@ -55,7 +55,7 @@ test("events asks with the filters and prints one line per event", async () => {
   const server = fakeServer(200, { events: [{ time: "2026-10-23T00:00:00Z", type: "company.registered", country: "ES", title: "New company registered: X SL" }], total: 1 });
   const io = capture();
   assert.equal(await run(["events", "--type", "company.registered", "--country", "es", "--limit", "5"], { fetch: server.fetch, env: { WS_KEY: "wsk_test" }, ...io }), 0);
-  assert.equal(server.calls[0].url, "https://worldsignals.io/api/events?types=company.registered&country=ES&limit=5");
+  assert.equal(server.calls[0].url, "https://worldsignals.dev/api/events?types=company.registered&country=ES&limit=5");
   assert.equal(server.calls[0].init.headers.authorization, "Bearer wsk_test");
   assert.match(io.lines.out[0], /^2026-10-23 {2}company\.registered +ES {2}New company registered: X SL$/);
 });
@@ -63,7 +63,7 @@ test("events asks with the filters and prints one line per event", async () => {
 test("events passes the filters on, and explains a refused one", async () => {
   const server = fakeServer(200, { events: [], total: 0, cursor: 5 });
   await run(["events", "--ecosystem", "pypi", "--where", "data.severity=high"], { fetch: server.fetch, env: { WS_KEY: "wsk_test" }, ...capture() });
-  assert.equal(server.calls[0].url, "https://worldsignals.io/api/events?ecosystems=pypi&where=data.severity%3Dhigh&limit=20");
+  assert.equal(server.calls[0].url, "https://worldsignals.dev/api/events?ecosystems=pypi&where=data.severity%3Dhigh&limit=20");
   const io = capture();
   assert.equal(await run(["events", "--platform", "beos"], { ...fakeServer(400, { error: '"beos" isn\'t a platform.' }), env: { WS_KEY: "k" }, ...io }), 2);
   assert.match(io.lines.err[0], /ws events: "beos" isn't a platform/);

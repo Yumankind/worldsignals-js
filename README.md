@@ -2,7 +2,7 @@
 
 Real-world events for code and AI agents: new companies, public tenders, vulnerabilities and exploits,
 service outages, package releases, AI model launches and price changes, data breach notices, and more,
-as one standard event stream. See [worldsignals.io](https://worldsignals.io).
+as one standard event stream. See [worldsignals.dev](https://worldsignals.dev).
 
 This package is the command line tool. An SDK and an MCP server will join it here.
 
@@ -26,7 +26,7 @@ It prints a message and a confirmation link to pass on. Once your person has con
 key that reads events for them:
 
 ```sh
-npx worldsignals key --link "https://worldsignals.io/confirm?t=…"
+npx worldsignals key --link "https://worldsignals.dev/confirm?t=…"
 ```
 
 ## Read events
@@ -42,7 +42,7 @@ number to ask from next time. `--after <time>` shows the newest events first see
 
 | Option | Meaning |
 | --- | --- |
-| `--type` | Comma-separated event types, from the [catalogue](https://worldsignals.io/events) |
+| `--type` | Comma-separated event types, from the [catalogue](https://worldsignals.dev/events) |
 | `--country` | ISO country code |
 | `--limit` | 1 to 200 |
 | `--key` | Your access key, or set `WS_KEY` |
@@ -93,7 +93,7 @@ npx worldsignals watch --type software.released --agent codex --batch
 
 Events are handled one after another, oldest first, at least once: the place is saved only after the
 program or agent finishes. More, with a guide per agent, in the
-[docs](https://worldsignals.io/docs#agent-guides).
+[docs](https://worldsignals.dev/docs#agent-guides).
 
 ## Safety
 
@@ -108,7 +108,7 @@ as data, never as instructions:
 
 `watch --agent` fences events off as data in the prompt and withholds your access key; `claude -p` can't
 approve tools on its own and `codex exec` gets a read-only sandbox. That helps; a sandbox is still the
-defence. More in the [docs](https://worldsignals.io/docs#safety).
+defence. More in the [docs](https://worldsignals.dev/docs#safety).
 
 ## Coming next
 

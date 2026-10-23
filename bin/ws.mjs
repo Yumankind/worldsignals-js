@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // worldsignals (or ws): the WorldSignals command line tool. One file, no dependencies, Node 18 or later.
-// npx worldsignals help, or download https://worldsignals.io/cli/ws.mjs and run node ws.mjs.
+// npx worldsignals help, or download https://worldsignals.dev/cli/ws.mjs and run node ws.mjs.
 //
 //   node ws.mjs signup --email ana@example.com --agent "My agent" [--company … --type … --country … --plan … --billing …]
 //   node ws.mjs key --link <confirm_url>       (after your person confirmed: prints the access key)
 //   node ws.mjs events [--type …] [--country ES] [--after <number|time>] [--limit 50] [--json]   (needs WS_KEY or --key)
 //   node ws.mjs watch [--type …] [--country …] [--exec <program> | --agent claude|codex] [--out <folder>] [--batch]
 //
-// WS_API overrides the server (default https://worldsignals.io). WS_KEY is the access key from signing up.
+// WS_API overrides the server (default https://worldsignals.dev). WS_KEY is the access key from signing up.
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -16,11 +16,11 @@ import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_API = "https://worldsignals.io";
+const DEFAULT_API = "https://worldsignals.dev";
 export const VERSION = "0.3.0";
 
 const HELP = `worldsignals ${VERSION}, the WorldSignals command line tool (also installed as ws;
-run it with npx worldsignals, or node ws.mjs from https://worldsignals.io/cli/ws.mjs)
+run it with npx worldsignals, or node ws.mjs from https://worldsignals.dev/cli/ws.mjs)
 
 Usage:
   ws signup --email <person's email> --agent <your agent's name> [options]
