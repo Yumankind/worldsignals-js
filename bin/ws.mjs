@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.io";
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 
 const HELP = `worldsignals ${VERSION}, the WorldSignals command line tool (also installed as ws;
 run it with npx worldsignals, or node ws.mjs from https://worldsignals.io/cli/ws.mjs)
@@ -208,7 +208,10 @@ export const AGENTS = {
   ],
 };
 
-/** Reads Server-Sent Events from a response body: {event, id, data}, and {event: "heartbeat"} for comments. */
+/**
+ * Reads Server-Sent Events from a response body: {event, id, data}; {event: "heartbeat"} for comments; and
+ * {event: "progress", id} for an id with no data, which says nothing up to that number matched.
+ */
 export async function* readEvents(body) {
   const decoder = new TextDecoder();
   let buffer = "";
@@ -221,6 +224,7 @@ export async function* readEvents(body) {
       buffer = buffer.slice(nl + 1);
       if (line === "") {
         if (message.data.length) yield { event: message.event ?? "message", id: message.id, data: message.data.join("\n") };
+        else if (message.id !== undefined) yield { event: "progress", id: message.id };
         message = { data: [] };
       } else if (line.startsWith(":")) {
         yield { event: "heartbeat" };
@@ -444,6 +448,13 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal }) {
             const seq = Number(m.id);
             await receive(seq, JSON.parse(m.data));
             after = seq;
+          } else if (m.event === "progress") {
+            // Nothing up to this number matched: resume after it, and save it once nothing is waiting.
+            const seq = Number(m.id);
+            if (Number.isSafeInteger(seq) && seq > (after ?? -1)) {
+              after = seq;
+              if (!pending.length) then(() => save(seq));
+            }
           } else if (m.event === "heartbeat" && values.once) {
             // The server sends a heartbeat once it has sent everything waiting.
             done = true;

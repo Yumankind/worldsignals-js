@@ -64,6 +64,24 @@ test("readEvents parses ids, named events, multi-line data and heartbeats, acros
   const got = [];
   for await (const m of readEvents(body)) got.push(m);
   assert.deepEqual(got, [{ event: "message", id: "7", data: '{"a":\n1}' }, { event: "heartbeat" }, { event: "bye", id: undefined, data: "{}" }]);
+  const progress = [];
+  for await (const m of readEvents(new Response("id: 42\n\n").body)) progress.push(m);
+  assert.deepEqual(progress, [{ event: "progress", id: "42" }]);
+});
+
+test("moves past numbers the server says didn't match, so a rare filter doesn't read them again", async () => {
+  const state = join(tmp(), "watch.json");
+  const server = fakeStream(sse(ready(10), msg(14), "id: 90\n\n", HB));
+  const io = capture();
+  await run(["watch", "--once", "--state", state], { fetch: server.fetch, env, ...io });
+  assert.deepEqual(io.lines.out.map((l) => JSON.parse(l).id), ["evt_14"]);
+  assert.equal(JSON.parse(readFileSync(state, "utf8")).after, 90);
+  // With a batch still waiting, the place stays before it until the batch has run.
+  const children = fakeSpawn();
+  const batchState = join(tmp(), "watch.json");
+  await run(["watch", "--once", "--state", batchState, "--exec", "./x", "--batch"], { fetch: fakeStream(sse(ready(10), msg(14), "id: 90\n\n", HB)).fetch, env, spawn: children.spawn, ...capture() });
+  assert.equal(children.runs.length, 1);
+  assert.equal(JSON.parse(readFileSync(batchState, "utf8")).after, 14);
 });
 
 test("prints each event as a line of JSON and saves where it got to", async () => {
