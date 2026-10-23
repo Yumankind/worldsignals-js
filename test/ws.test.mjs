@@ -85,6 +85,9 @@ test("key prints the access key once the person confirmed, and says when they ha
   io = capture();
   assert.equal(await run(["key", "--link", link], { ...fakeServer(200, { status: "pending" }), env: {}, ...io }), 1);
   assert.match(io.lines.err[0], /hasn't confirmed/);
+  io = capture();
+  assert.equal(await run(["key", "--link", link], { ...fakeServer(200, { status: "confirmed", email_confirmed: true, waiting_list: true }), env: {}, ...io }), 1);
+  assert.match(io.lines.err[0], /waiting list/);
 });
 
 test("signupBody leaves out what wasn't given", () => {

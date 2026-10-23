@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";
 
 const HELP = `worldsignals ${VERSION}, the WorldSignals command line tool (also installed as ws;
 run it with npx worldsignals, or node ws.mjs from https://worldsignals.dev/cli/ws.mjs)
@@ -34,7 +34,8 @@ Usage:
       --agent-version <version>
 
   ws key --link <confirm_url>
-      Once your person has confirmed, print the access key that reads events for them.
+      Once your person has confirmed and WorldSignals has let them in from the waiting list,
+      print the access key that reads events for them.
 
   ws events [--type <ids>] [--country <code>] [--after <number|time>] [--limit <1-200>] [--json] [--key <key>]
       Print collected public events. Needs the access key from signing up (--key, or WS_KEY).
@@ -164,7 +165,9 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
       err(
         body.status === "pending"
           ? "Your person hasn't confirmed yet. Ask them to open the link."
-          : body.status === "confirmed"
+          : body.status === "confirmed" && body.waiting_list
+            ? "Your person is on the waiting list: WorldSignals lets people in in waves and emails them when they're in. Run ws key again later."
+            : body.status === "confirmed"
             ? "Your person confirmed, but not their email yet. Ask them to open the link we emailed them."
             : `This request was ${body.status}.`,
       );
