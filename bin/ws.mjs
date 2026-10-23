@@ -8,10 +8,11 @@
 //
 // WS_API overrides the server (default https://worldsignals.io). WS_KEY is the access key from signing up.
 import { parseArgs } from "node:util";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.io";
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 const HELP = `worldsignals ${VERSION}, the WorldSignals command line tool (also installed as ws;
 run it with npx worldsignals, or node ws.mjs from https://worldsignals.io/cli/ws.mjs)
@@ -169,12 +170,24 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
   return 2;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Run when started as a program. npm and npx start it through a symlink in node_modules/.bin, so compare
+// real paths. Set the exit code rather than exiting, so output to a pipe is never cut short.
+function isMain() {
+  try {
+    return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   run(process.argv.slice(2)).then(
-    (code) => process.exit(code),
+    (code) => {
+      process.exitCode = code;
+    },
     (e) => {
       console.error(e instanceof Error ? e.message : e);
-      process.exit(1);
+      process.exitCode = 1;
     },
   );
 }

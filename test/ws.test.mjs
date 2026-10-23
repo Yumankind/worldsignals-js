@@ -89,3 +89,14 @@ test("version prints the package version", async () => {
   assert.deepEqual(io.lines.out, [pkg.version]);
   assert.equal(VERSION, pkg.version);
 });
+
+test("runs when started through a symlink, as npm and npx start it", async () => {
+  const { mkdtempSync, symlinkSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "ws-link-"));
+  const link = join(dir, "worldsignals");
+  symlinkSync(new URL("../bin/ws.mjs", import.meta.url).pathname, link);
+  assert.equal(execFileSync(process.execPath, [link, "--version"], { encoding: "utf8" }).trim(), VERSION);
+});
