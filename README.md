@@ -24,12 +24,21 @@ npx worldsignals signup --email ana@example.com --agent "My agent" \
   --type company.registered,procurement.tender_published --country ES,PT --plan developer
 ```
 
-It prints a message and a confirmation link to pass on. Once your person has confirmed, get the access
-key that reads events for them:
+It prints a message and a confirmation link to pass on, and keeps a pickup key on this machine
+(`~/.config/worldsignals/requests.json`). Once your person has confirmed, get the access key that reads
+events for them, once:
 
 ```sh
 npx worldsignals key --link "https://worldsignals.dev/confirm?t=…"
 ```
+
+Work emails get in as soon as they confirm; personal addresses (Gmail, Outlook…) wait for a daily
+approval. For a paid plan, `npx worldsignals upgrade --plan developer` prints a Stripe payment link to
+pass on: your person pays, and you never see a card.
+
+`XX` is the events about the whole world (vulnerabilities, outages, AI models): a country like the
+others. Without `--country` you get every country, `XX` included; with a list, add it to get them too:
+`--country ES,PT,XX`. When a type you chose only comes as `XX` and the list leaves it out, the CLI says so.
 
 ## Read events
 
@@ -45,7 +54,7 @@ number to ask from next time. `--after <time>` shows the newest events first see
 | Option | Meaning |
 | --- | --- |
 | `--type` | Comma-separated event types, from the [catalogue](https://worldsignals.dev/events) |
-| `--country` | ISO country code |
+| `--country` | One ISO country code or several, comma-separated; `XX` for the events about the whole world |
 | `--limit` | 1 to 200 |
 | `--key` | Your access key, or set `WS_KEY` |
 
@@ -84,7 +93,7 @@ npx worldsignals watch --type software.released --agent codex --batch
 
 | Option | Meaning |
 | --- | --- |
-| `--type`, `--country` | What to watch. Default: what you chose when signing up |
+| `--type`, `--country` | What to watch, comma-separated (`--country PT,ES,XX`). Default: what you chose when signing up |
 | `--exec <program>` | Run it for each event (or batch), events as JSON lines on stdin, never through a shell. Arguments after `--` go to it. Your access key is left out of its environment |
 | `--agent claude\|codex` | Start `claude -p` or `codex exec` (read-only sandbox) with `--prompt` (text or a file) and the events fenced off as data |
 | `--out <folder>` | Write each event to its own file |

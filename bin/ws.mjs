@@ -4,12 +4,12 @@
 //
 //   node ws.mjs signup --email ana@example.com --agent "My agent" [--company … --type … --country … --plan … --billing …]
 //   node ws.mjs key --link <confirm_url>       (after your person confirmed: prints the access key)
-//   node ws.mjs events [--type …] [--country ES] [--after <number|time>] [--limit 50] [--json]   (needs WS_KEY or --key)
+//   node ws.mjs events [--type …] [--country ES,FR] [--after <number|time>] [--limit 50] [--json]   (needs WS_KEY or --key)
 //   node ws.mjs watch [--type …] [--country …] [--exec <program> | --agent claude|codex] [--out <folder>] [--batch]
 //
 // WS_API overrides the server (default https://worldsignals.dev). WS_KEY is the access key from signing up.
 import { spawn as nodeSpawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.3.1";
+export const VERSION = "0.3.2";
 
 const HELP = `worldsignals ${VERSION}, the WorldSignals command line tool (also installed as ws;
 run it with npx worldsignals, or node ws.mjs from https://worldsignals.dev/cli/ws.mjs)
@@ -28,17 +28,27 @@ Usage:
       nothing is signed up until they do.
       --company <name>   --role <role>   --use-case <text>
       --type <ids>       comma-separated event types, e.g. company.registered,procurement.tender_published
-      --country <codes>  comma-separated ISO codes, e.g. PT,ES (default: worldwide)
+      --country <codes>  comma-separated ISO codes, e.g. PT,ES (default: every country). Add XX for
+                         the events about the whole world (vulnerabilities, outages, AI models): PT,ES,XX
       --plan <plan>      free, developer, team, business or enterprise
       --billing <period> monthly or yearly
       --agent-version <version>
 
-  ws key --link <confirm_url>
-      Once your person has confirmed and WorldSignals has let them in from the waiting list,
-      print the access key that reads events for them.
+  ws key --link <confirm_url> [--secret <pickup_secret>]
+      Once your person has confirmed the request and clicked the email WorldSignals sent them,
+      print the access key that reads events for them, once: at once for a work email, or after
+      WorldSignals' daily approval for a personal address (Gmail, Outlook…). It sends the pickup
+      request with the key ws signup made and kept on this machine (~/.config/worldsignals/requests.json);
+      --secret sends a pickup secret instead, for a request made without one.
 
-  ws events [--type <ids>] [--country <code>] [--after <number|time>] [--limit <1-200>] [--json] [--key <key>]
+  ws upgrade --plan <developer|team|business> [--billing monthly|yearly] [--key <key>]
+      Print a Stripe payment link for a paid plan. Pass it to your person: they pay, the plan starts,
+      and you never see a card. Needs the access key (WS_KEY).
+
+  ws events [--type <ids>] [--country <codes>] [--after <number|time>] [--limit <1-200>] [--json] [--key <key>]
       Print collected public events. Needs the access key from signing up (--key, or WS_KEY).
+      --country <codes> one ISO code or several, comma-separated, e.g. FR,ES; add XX for the events
+                        about the whole world (vulnerabilities, outages, AI models): FR,ES,XX
       --after <number>  the events stored after that event number, oldest first: poll with it.
                         Without --json the last line says the number to ask from next time.
       --after <time>    the newest events first seen after that time.
@@ -55,7 +65,7 @@ Usage:
       Stay connected and handle each new event as it arrives. Picks up where it stopped last time,
       even after the computer slept or the network dropped. Needs the access key.
       --type <ids>       event types (default: the ones you chose when signing up)
-      --country <codes>  ISO codes; events about the whole world always come too (default: your choice)
+      --country <codes>  ISO codes; XX is the events about the whole world (default: your choice)
       --platform, --ecosystem, --tag, --where   the filters above
       With no action it prints one standard event per line (JSON). Actions:
       --exec <program>   run it for each event, with the event as JSON on stdin; never through a shell
@@ -128,10 +138,13 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
       err("ws signup needs --email (your person's email) and --agent (your agent's name).");
       return 2;
     }
+    // A key pair for fetching the access key later: the public key goes with the request, the private
+    // key stays on this machine.
+    const keys = pickupKeyPair();
     const res = await fetch(`${api}/api/signup-requests`, {
       method: "POST",
       headers: { "content-type": "application/json", "user-agent": "ws-cli/1" },
-      body: JSON.stringify(signupBody(values)),
+      body: JSON.stringify({ ...signupBody(values), pickup_public_key: keys.publicKey }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -142,11 +155,32 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
     out("");
     out(`Confirm link: ${body.confirm_url}`);
     out(`Expires:      ${body.expires_at}`);
+    if (body.hint) out(`Note:         ${body.hint}`);
+    // Keep what ws key needs to prove this machine made the request: the private key (or, from a server
+    // that answered with one, the pickup secret). Neither goes in a URL.
+    const token = (() => {
+      try {
+        return new URL(body.confirm_url).searchParams.get("t");
+      } catch {
+        return null;
+      }
+    })();
+    if (token) {
+      const path = requestsPath(env);
+      const entry = body.pickup_secret ? { secret: body.pickup_secret } : { private_key: keys.privateKey };
+      try {
+        saveRequest(path, token, entry);
+        out(`Pickup key saved in ${path}; ws key --link <confirm link> uses it, on this machine only.`);
+      } catch {
+        if (body.pickup_secret) out(`Pickup secret (keep it private; ws key --secret needs it): ${body.pickup_secret}`);
+        else err(`Couldn't save the pickup key in ${path}: ws key won't be able to fetch the access key from this request.`);
+      }
+    }
     return 0;
   }
 
   if (command === "key") {
-    const { values } = parseArgs({ args: rest, options: { link: { type: "string" } } });
+    const { values } = parseArgs({ args: rest, options: { link: { type: "string" }, secret: { type: "string" } } });
     let token = values.link;
     try {
       token = new URL(values.link).searchParams.get("t");
@@ -155,7 +189,11 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
       err("ws key needs --link with the confirm link from ws signup.");
       return 2;
     }
-    const res = await fetch(`${api}/api/signup-requests/${encodeURIComponent(token)}`, { headers: { "user-agent": "ws-cli/1" } });
+    // Proof this machine made the request: a pickup secret given, or a signature with the saved key.
+    const saved = readRequests(requestsPath(env))[token] ?? {};
+    const secret = values.secret ?? (saved.private_key ? null : saved.secret);
+    const proof = secret ? { authorization: `Bearer ${secret}` } : saved.private_key ? pickupHeaders(token, saved.private_key) : {};
+    const res = await fetch(`${api}/api/signup-requests/${encodeURIComponent(token)}`, { headers: { "user-agent": "ws-cli/1", ...proof } });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       err(`Couldn't read the request (${res.status}): ${body.error ?? "no details"}`);
@@ -163,10 +201,14 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
     }
     if (!body.access_key) {
       err(
-        body.status === "pending"
+        body.pickup_secret_required || body.signature_required
+          ? "This request's pickup key isn't on this machine. Run ws key where you ran ws signup (or pass --secret for a request made with a pickup secret)."
+          : body.key_shown || body.error
+            ? body.error
+            : body.status === "pending"
           ? "Your person hasn't confirmed yet. Ask them to open the link."
           : body.status === "confirmed" && body.waiting_list
-            ? "Your person is on the waiting list: WorldSignals lets people in in waves and emails them when they're in. Run ws key again later."
+            ? "Your person confirmed their email and waits for WorldSignals' daily approval (personal addresses do; work emails get in at once). They get an email when they're in. Run ws key again later."
             : body.status === "confirmed"
             ? "Your person confirmed, but not their email yet. Ask them to open the link we emailed them."
             : `This request was ${body.status}.`,
@@ -174,6 +216,28 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
       return 1;
     }
     out(body.access_key);
+    return 0;
+  }
+
+  if (command === "upgrade") {
+    const { values } = parseArgs({ args: rest, options: { plan: { type: "string" }, billing: { type: "string" }, key: { type: "string" } } });
+    const key = values.key ?? env.WS_KEY;
+    if (!key || !values.plan) {
+      err("ws upgrade needs --plan (developer, team or business) and your access key (--key or WS_KEY).");
+      return 2;
+    }
+    const res = await fetch(`${api}/api/billing/checkout`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "ws-cli/1", authorization: `Bearer ${key}` },
+      body: JSON.stringify({ plan: values.plan, billing: values.billing ?? "monthly" }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.url) {
+      err(`No payment link (${res.status}): ${body.error ?? "no details"}`);
+      return 1;
+    }
+    out(`Payment link for ${body.plan} (${body.billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay; the plan starts as soon as the payment goes through:`);
+    out(body.url);
     return 0;
   }
 
@@ -196,10 +260,12 @@ export async function run(argv, { fetch = globalThis.fetch, env = process.env, o
     const res = await fetch(`${api}/api/events?${params}`, { headers: { "user-agent": "ws-cli/1", authorization: `Bearer ${key}` } });
     if (!res.ok) {
       const reason = res.status === 400 ? (await res.json().catch(() => ({}))).error : null;
-      err(res.status === 401 ? "That access key isn't valid. Sign up again with the same email to get it back." : reason ? `ws events: ${reason}` : `Couldn't read events (${res.status}).`);
+      err(res.status === 401 ? "That access key doesn't work. Sign in at https://worldsignals.dev/signin or open your Account page to see your current key." : reason ? `ws events: ${reason}` : `Couldn't read events (${res.status}).`);
       return res.status === 400 ? 2 : 1;
     }
-    const { events, cursor } = await res.json();
+    const { events, cursor, hint } = await res.json();
+    // The hint goes to stderr, so --json output stays one event per line.
+    if (hint) err(`Note: ${hint}`);
     if (values.json) {
       for (const e of events) out(JSON.stringify(e));
     } else {
@@ -299,11 +365,43 @@ function loadCursor(path) {
 }
 
 // Written whole and renamed into place, so a crash never leaves half a file.
-function writeWhole(path, text) {
+function writeWhole(path, text, mode = 0o644) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = join(dirname(path), `.${randomBytes(4).toString("hex")}.tmp`);
-  writeFileSync(tmp, text);
+  writeFileSync(tmp, text, { mode });
   renameSync(tmp, path);
+}
+
+// Sign-up requests' pickup keys, by request token. ws signup makes an Ed25519 key pair, sends the public key
+// and keeps the private one here; ws key signs the fetch with it, so nothing secret ever crosses the network.
+// (An entry may instead hold a pickup secret, from a server that answered with one.) Only this user can read
+// the file; entries older than 30 days are dropped (requests last 7).
+const requestsPath = (env) => join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config"), "worldsignals", "requests.json");
+function readRequests(path) {
+  try {
+    const all = JSON.parse(readFileSync(path, "utf8"));
+    return all && typeof all === "object" ? all : {};
+  } catch {
+    return {};
+  }
+}
+function saveRequest(path, token, entry, now = Date.now()) {
+  const kept = Object.fromEntries(Object.entries(readRequests(path)).filter(([, r]) => now - Date.parse(r?.saved_at ?? "") < 30 * 86_400_000));
+  kept[token] = { ...entry, saved_at: new Date(now).toISOString() };
+  writeWhole(path, JSON.stringify(kept, null, 2), 0o600);
+}
+
+/** A new Ed25519 key pair: the public key raw and base64url (what the server takes), the private key as PEM. */
+function pickupKeyPair() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  return { publicKey: publicKey.export({ format: "jwk" }).x, privateKey: privateKey.export({ format: "pem", type: "pkcs8" }) };
+}
+
+/** The headers that prove this machine made the request: a timestamp and its Ed25519 signature. */
+export function pickupHeaders(token, privateKeyPem, now = Date.now()) {
+  const timestamp = String(Math.floor(now / 1000));
+  const signature = sign(null, Buffer.from(`GET /api/signup-requests/${token} ${timestamp}`), createPrivateKey(privateKeyPem)).toString("base64url");
+  return { "x-ws-timestamp": timestamp, "x-ws-signature": signature };
 }
 
 /** Runs a program with `input` on stdin and no shell. Resolves with its exit code, or rejects if it can't start. */
@@ -448,7 +546,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal }) {
       if (after != null) headers["last-event-id"] = String(after);
       const res = await fetch(`${api}/api/stream${params.size ? `?${params}` : ""}`, { headers, signal: conn.signal });
       if (res.status === 401) {
-        err("That access key isn't valid. Sign up again with the same email to get it back.");
+        err("That access key doesn't work. Sign in at https://worldsignals.dev/signin or open your Account page to see your current key.");
         return 1;
       }
       if (res.status === 400) {
@@ -467,6 +565,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal }) {
             // Save the starting point too, so a run that handles nothing still tells the next where to begin.
             if (!announced) then(() => save(after));
             if (!announced) err(`Watching for new events after number ${after}${r.types?.length ? ` (${r.types.join(", ")})` : ""}. Ctrl+C stops.`);
+            if (!announced && r.hint) err(`Note: ${r.hint}`);
             announced = true;
           } else if (m.event === "gap") {
             const g = JSON.parse(m.data);
