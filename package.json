@@ -9,6 +9,7 @@
   },
   "files": ["bin", "README.md", "LICENSE"],
   "engines": { "node": ">=18" },
+  "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "check": "node --check bin/ws.mjs && node --test test/*.test.mjs"
