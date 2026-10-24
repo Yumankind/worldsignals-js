@@ -1,0 +1,109 @@
+name: release
+# A pushed vX.Y.Z tag tests, publishes to npm with provenance through trusted
+# publishing (GitHub OIDC, no npm token stored anywhere), then makes the
+# GitHub release. See RELEASING.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag matches package.json and is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match package.json version $version (expected v$version)"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $TAG points at $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
+
+  test:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - run: npm run check
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    # The trusted publisher on npmjs.com names this environment; it can also
+    # require a reviewer before anything is published.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: npm 11.5.1 or later (trusted publishing)
+        run: |
+          if ! node -e "const [a,b,c]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "$(npm --version)"; then
+            npm install -g npm@11
+          fi
+          npm --version
+      - name: What ships
+        run: npm pack --dry-run
+      - run: npm publish --provenance --access public
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: GitHub release with the tag's notes
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # checkout leaves an annotated tag lightweight; fetch the real one for its message
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          notes="$(git tag -l --format='%(contents)' "$TAG")"
+          if [ -z "$notes" ]; then
+            notes="$(git log -1 --format=%B "$TAG")"
+          fi
+          notes="$notes
+
+          npm: https://www.npmjs.com/package/worldsignals/v/${TAG#v}"
+          printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
