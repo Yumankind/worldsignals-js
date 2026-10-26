@@ -5,7 +5,11 @@ import { test } from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, run, signedString, signingTime } from "../bin/ws.mjs";
+import { agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
+
+// Never a real browser from a test: commands that open a link (upgrade, billing, connect) get a spawn that does
+// nothing and a platform with no browser, unless the test brings its own to check that it opens.
+const run = (args, ctx = {}) => runCli(args, { spawn: () => ({ on() {}, unref() {} }), platform: "test", ...ctx });
 
 // Where the tests keep agent keys: never the real ~/.config.
 const CONFIG = mkdtempSync(join(tmpdir(), "ws-cli-"));
