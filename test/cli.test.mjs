@@ -597,3 +597,19 @@ test("a command run by a deleted agent says so and points to signup", async () =
   assert.equal(await run(["events"], { fetch: server.fetch, env, ...io }), 1);
   assert.match(io.lines.err.join("\n"), /agent account agt_1 no longer exists.*Run ws signup for a new account; it makes a new key\./);
 });
+
+test("watch waits as long as a 429 asks, says why, and connects again", async () => {
+  let calls = 0;
+  const fetch = async () =>
+    ++calls === 1
+      ? new Response(JSON.stringify({ error: "This account already has its live connection open, the most the Free plan allows at once.", reason: "connections" }), { status: 429, headers: { "retry-after": "1" } })
+      : new Response(SSE, { headers: { "content-type": "text/event-stream" } });
+  const io = capture();
+  const state = join(mkdtempSync(join(tmpdir(), "ws-cli-")), "watch.json");
+  const started = Date.now();
+  assert.equal(await run(["watch", "--once", "--state", state], { fetch, env: { ...agentEnv(), WS_KEY: "wsk_1.a" }, ...io }), 0);
+  assert.equal(calls, 2);
+  assert.ok(Date.now() - started >= 900, "waited the second it was asked to");
+  assert.match(io.lines.err[0], /already has its live connection open.*Trying again in 1 s\.$/);
+  assert.deepEqual(io.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
+});

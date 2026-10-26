@@ -21,7 +21,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.4.1";
+export const VERSION = "0.4.2";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -1226,6 +1226,14 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause 
       if (res.status === 400) {
         err(`${p} watch: ${(await res.json().catch(() => ({}))).error ?? "the server refused the request"}`);
         return 2;
+      }
+      if (res.status === 429) {
+        // Too many connections at once for the plan, or opened this minute: say so, and wait as long as the server asks.
+        const body = await res.json().catch(() => ({}));
+        const wait = Math.min(Math.max(Number(res.headers.get("retry-after")) || 60, 1), 600) * 1000;
+        err(`${body.error ?? "Too many connections."} Trying again in ${Math.round(wait / 1000)} s.`);
+        await sleep(wait, stop.signal);
+        continue;
       }
       if (!res.ok) trouble = `the server answered ${res.status}`;
       else {

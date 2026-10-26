@@ -96,7 +96,7 @@ npx worldsignals watch --type vulnerability.advisory_published --ecosystem pypi 
 ## Watch live
 
 `watch` stays connected and handles each event as it arrives. It remembers the number of the last event
-it handled, so after a restart, a sleeping laptop or a dropped network it carries on from there.
+it handled, so after a restart, a sleeping laptop or a dropped network it carries on from there. Each plan keeps a number of live connections open at once (Free 1, Developer 5, Team 25, Business 100); past that, `watch` says so, waits as long as the server asks and connects again.
 
 ```sh
 npx worldsignals watch                                    # one JSON event per line
