@@ -33,12 +33,19 @@ that links it to the commit and workflow run that built it.
 4. The `release` workflow then:
    - fails if the tag isn't `v` + `package.json`'s `version`, or if the tagged commit isn't on `main`;
    - runs `npm run check` on Node 18, 20 and 22;
-   - publishes with `npm publish --provenance --access public`, authenticated by GitHub
-     OIDC through npm trusted publishing (no npm token is stored anywhere);
+   - **stages** the version with `npm stage publish --provenance --access public`,
+     authenticated by GitHub OIDC through npm trusted publishing (no npm token is stored
+     anywhere). A staged version isn't public yet;
    - creates the GitHub release `vX.Y.Z`, with the tag message as its notes (or the
      commit message, if the tag is lightweight).
 
-5. Check that the release is listed on
+5. **Approve it on npm.** Open the package on npmjs.com → **Staged Packages**, check the
+   version and its files, and click **Approve**, confirming with 2FA. Or from a terminal:
+   `npm stage list worldsignals`, `npm stage view <stage-id>`, then
+   `npm stage approve <stage-id>`. Only then is the version public. (`npm stage reject
+   <stage-id>` throws it away; the version number can then be staged again.)
+
+6. Check that the release is listed on
    [npmjs.com/package/worldsignals](https://www.npmjs.com/package/worldsignals) with a
    "Provenance" badge, and run `npm audit signatures` in any project that installs it.
 
@@ -70,6 +77,9 @@ them by hand on npmjs.com and GitHub, before the first tag is pushed.
    - Repository: `worldsignals-js`
    - Workflow filename: `release.yml`
    - Environment name: `npm` (the publish job runs in that environment)
+   - Allowed actions: leave **npm publish** and **npm dist-tag** unchecked. `npm stage
+     publish` is always allowed, and staging is all the workflow does: a person approves
+     each version with 2FA before it's public, as npm recommends.
 
    npm doesn't check this when you save it; the first tag push tests it.
 3. **Lock publishing to 2FA and OIDC.** On the same page, under Publishing access, choose
