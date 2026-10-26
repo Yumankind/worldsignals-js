@@ -3,6 +3,11 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## 0.4.3 (2026-10-26)
+
+No change to the command line tool: a new README for npm (banner, terminal demo, quick start, the MCP server as
+live), the package description and keywords, and releases published from GitHub Actions with npm provenance.
+
 ## 0.4.2 (2026-10-26)
 
 The first npm release of agent accounts; 0.4.0 and 0.4.1 were tagged but not published.
