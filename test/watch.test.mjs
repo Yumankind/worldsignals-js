@@ -241,7 +241,8 @@ test("retries after a server error, and stops on a bad key or a refused request"
 test("checks its options before connecting", async () => {
   const no = () => assert.fail("no request");
   const cases = [
-    [[], {}, /access key/],
+    // With no key, watch signs the agent up (test/cli.test.mjs); --no-signup keeps the old answer.
+    [["--no-signup"], {}, /needs an agent key on this device, or an access key/],
     [["--exec", "a", "--agent", "claude"], env, /not both/],
     [["--agent", "gpt"], env, /claude or codex/],
     [["--prompt", "x"], env, /for --agent/],

@@ -14,27 +14,43 @@ npx worldsignals help
 
 Node 18 or later, no dependencies.
 
-## Sign up from an agent
+## Start from an agent
 
-An AI agent can ask to sign up the person or company it works for. Nothing is signed up until that person
-opens the link and confirms, then confirms their email.
-
-```sh
-npx worldsignals signup --email ana@example.com --agent "My agent" \
-  --type company.registered,procurement.tender_published --country ES,PT --plan developer
-```
-
-It prints a message and a confirmation link to pass on, and keeps a pickup key on this machine
-(`~/.config/worldsignals/requests.json`). Once your person has confirmed, get the access key that reads
-events for them, once:
+An AI agent gets an account of its own. No email is needed, and none is ever sent:
 
 ```sh
-npx worldsignals key --link "https://worldsignals.dev/confirm?t=…"
+npx worldsignals signup --name "My agent" --label laptop
 ```
 
-Work emails get in as soon as they confirm; personal addresses (Gmail, Outlook…) wait for a daily
-approval. For a paid plan, `npx worldsignals upgrade --plan developer` prints a Stripe payment link to
-pass on: your person pays, and you never see a card.
+`signup` makes an Ed25519 key pair on this machine (`~/.config/worldsignals/agent.json`, readable only by
+you) and signs every request with it; the private key never leaves the machine. Agent accounts have no
+free plan, so next, either:
+
+```sh
+npx worldsignals upgrade --plan developer   # a Stripe payment link to pass on: your person pays, you never see a card
+npx worldsignals connect                    # a code your person approves at worldsignals.dev/link, to use their account
+```
+
+Or just start watching: `watch` signs the agent up the first time, prints the payment link and the connect
+code, and starts once one of them is done.
+
+```sh
+npx worldsignals watch --type company.registered --agent claude
+```
+
+| Command | What it does |
+| --- | --- |
+| `signup` | The agent's account and its key on this machine (`--name`, `--label`, optional `--email`) |
+| `upgrade` | A payment link for the agent's own plan (`--plan developer\|team\|business`, `--yearly`, `--wait`) |
+| `connect` | Act for your person's account, once they approve the code (`--email` also puts the request in their console) |
+| `status` | The agent, its plan or the account it's connected to |
+| `billing` | Stripe's billing portal for an agent that pays for its own plan: change plan or card, invoices, cancel |
+| `keys rotate` | A new key for this agent; the old one stops working |
+| `recover` | A new key for an agent whose key was lost, approved by the person who pays for it or connected it |
+
+An agent with no plan and no connection is deleted seven days after it was made, or after its plan ends;
+`signup` then makes a new one with a new key. A named or personal access key from the console still works
+everywhere: `--key wsk_…` or `WS_KEY=wsk_…`.
 
 `XX` is the events about the whole world (vulnerabilities, outages, AI models): a country like the
 others. Without `--country` you get every country, `XX` included; with a list, add it to get them too:
@@ -43,8 +59,8 @@ others. Without `--country` you get every country, `XX` included; with a list, a
 ## Read events
 
 ```sh
-WS_KEY=wsk_… npx worldsignals events --type vulnerability.exploited --limit 10
-WS_KEY=wsk_… npx worldsignals events --type company.registered --country ES --json
+npx worldsignals events --type vulnerability.exploited --limit 10
+npx worldsignals events --type company.registered --country ES --json
 ```
 
 `--json` prints one standard event per line. To poll, pass `--after <number>`: every stored event has a
@@ -56,7 +72,7 @@ number to ask from next time. `--after <time>` shows the newest events first see
 | `--type` | Comma-separated event types, from the [catalogue](https://worldsignals.dev/events) |
 | `--country` | One ISO country code or several, comma-separated; `XX` for the events about the whole world |
 | `--limit` | 1 to 200 |
-| `--key` | Your access key, or set `WS_KEY` |
+| `--key` | An access key from the console instead of the agent key, or set `WS_KEY` |
 
 `WS_API` points the tool at another server, for testing.
 
@@ -83,7 +99,6 @@ npx worldsignals watch --type vulnerability.advisory_published --ecosystem pypi 
 it handled, so after a restart, a sleeping laptop or a dropped network it carries on from there.
 
 ```sh
-export WS_KEY=wsk_…
 npx worldsignals watch                                    # one JSON event per line
 npx worldsignals watch --type company.registered --country PT,ES --exec ./on-event.sh
 npx worldsignals watch --type procurement.tender_published --out ./events/
@@ -93,8 +108,8 @@ npx worldsignals watch --type software.released --agent codex --batch
 
 | Option | Meaning |
 | --- | --- |
-| `--type`, `--country` | What to watch, comma-separated (`--country PT,ES,XX`). Default: what you chose when signing up |
-| `--exec <program>` | Run it for each event (or batch), events as JSON lines on stdin, never through a shell. Arguments after `--` go to it. Your access key is left out of its environment |
+| `--type`, `--country` | What to watch, comma-separated (`--country PT,ES,XX`). Default: the saved stream (`npx worldsignals stream`) |
+| `--exec <program>` | Run it for each event (or batch), events as JSON lines on stdin, never through a shell. Arguments after `--` go to it. An access key in `WS_KEY` is left out of its environment |
 | `--agent claude\|codex` | Start `claude -p` or `codex exec` (read-only sandbox) with `--prompt` (text or a file) and the events fenced off as data |
 | `--out <folder>` | Write each event to its own file |
 | `--batch` | Run once for events that came together: after `--batch-idle` (60 s) quiet, at most `--batch-max-wait` (600 s), or `--batch-max` (100) events |
