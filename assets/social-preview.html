@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- The GitHub social preview (assets/social-preview.png), 1280×640. To render it again:
+     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars \
+       --window-size=1280,640 --screenshot=assets/social-preview.png file://$PWD/assets/social-preview.html
+     The colours, fonts and logo follow worldsignals.dev (public/styles.css, public/brand.js). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WorldSignals social preview</title>
+<style>
+  :root {
+    --bg: #060609; --bg-2: #0d0c14; --text: #f3f1ed; --muted: #9c97a6; --line: rgb(255 255 255 / 0.09);
+    --card: rgb(255 255 255 / 0.04); --signal: #ff6a33; --key: #ffb38f;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { width: 1280px; height: 640px; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font); }
+  .page {
+    position: relative; width: 1280px; height: 640px; padding: 72px 80px; overflow: hidden;
+    background:
+      radial-gradient(620px 520px at 1040px 420px, rgb(255 106 51 / 0.17), transparent 70%),
+      radial-gradient(520px 420px at 160px 0px, rgb(90 120 255 / 0.10), transparent 70%),
+      linear-gradient(135deg, var(--bg-2), var(--bg));
+  }
+  .page::before { /* the site's faint dot grid */
+    content: ""; position: absolute; inset: 0;
+    background-image: radial-gradient(rgb(255 255 255 / 0.05) 1.1px, transparent 1.2px); background-size: 24px 24px;
+  }
+  .brand { position: relative; display: flex; align-items: center; gap: 18px; }
+  .brand svg.mark { width: 60px; height: 60px; flex: none; }
+  .wordmark { font: 700 54px/1 var(--font); letter-spacing: -0.025em; white-space: nowrap; }
+  .wordmark .wm-i { display: inline-block; width: 0.216em; height: 1em; margin-left: -0.216em; overflow: visible; vertical-align: baseline; }
+  h1 { position: relative; margin: 92px 0 0; max-width: 700px; font: 700 66px/1.04 var(--font); letter-spacing: -0.03em; }
+  h1 em { font-style: normal; color: var(--signal); }
+  p.pitch { position: relative; margin: 26px 0 0; max-width: 640px; font: 400 25px/1.4 var(--font); color: var(--muted); }
+  .foot { position: absolute; left: 80px; bottom: 64px; display: flex; align-items: center; gap: 22px; }
+  .cmd { font: 500 19px/1 var(--mono); padding: 13px 18px; border-radius: 10px; background: rgb(255 255 255 / 0.06); border: 1px solid var(--line); }
+  .cmd b { color: var(--signal); font-weight: 700; margin-right: 10px; }
+  .foot .site { font: 500 19px/1 var(--font); color: var(--muted); }
+  .stream {
+    position: absolute; top: -10px; right: 72px; width: 372px; display: flex; flex-direction: column; gap: 14px;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22%, #000 70%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0, #000 22%, #000 70%, transparent 100%);
+  }
+  .ev { padding: 15px 18px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); backdrop-filter: blur(2px); }
+  .ev code { display: block; font: 500 15px/1 var(--mono); color: var(--signal); }
+  .ev strong { display: block; margin-top: 9px; font: 600 18px/1.2 var(--font); }
+  .ev span { display: block; margin-top: 5px; font: 400 14.5px/1.2 var(--font); color: var(--muted); }
+  .ev.live { border-color: rgb(255 106 51 / 0.45); background: rgb(255 106 51 / 0.08); }
+  .ev.live code::after { content: ""; float: right; width: 9px; height: 9px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 5px rgb(255 106 51 / 0.18); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0d0c14" stroke="rgb(255 255 255 / 0.16)" stroke-width="0.6"/><circle cx="16" cy="16" r="9.5" fill="none" stroke="#f3f1ed" stroke-width="2.2"/><path d="M6.5 16h19M16 6.5c3.3 2.8 3.3 16.2 0 19M16 6.5c-3.3 2.8-3.3 16.2 0 19" fill="none" stroke="#f3f1ed" stroke-width="1.3" opacity=".5"/><circle cx="22.7" cy="9.3" r="3.6" fill="#ff6a33"/></svg>
+    <span class="wordmark" aria-label="WorldSignals">worldsı<svg class="wm-i" viewBox="-12.05 -100 21.6 100" aria-hidden="true"><circle cx="0" cy="-66.2" r="8.6" fill="#ff6a33"/></svg>gnals</span>
+  </div>
+
+  <h1>Real-world events for code and <em>AI agents</em></h1>
+  <p class="pitch">New companies, tenders, vulnerabilities, outages<br>and AI models, as one standard stream.</p>
+
+  <div class="foot">
+    <div class="cmd"><b>$</b>npx worldsignals watch --agent claude</div>
+    <div class="site">worldsignals.dev</div>
+  </div>
+
+  <div class="stream" aria-hidden="true">
+    <div class="ev"><code>software.released</code><strong>Package released</strong><span>crates.io · worldwide</span></div>
+    <div class="ev"><code>ai_model.price_changed</code><strong>AI model price changed</strong><span>Public model catalogue · worldwide</span></div>
+    <div class="ev live"><code>company.registered</code><strong>New company registered</strong><span>Madrid, Spain</span></div>
+    <div class="ev"><code>procurement.tender_published</code><strong>Public tender published</strong><span>Porto, Portugal</span></div>
+    <div class="ev"><code>vulnerability.exploited</code><strong>Exploited in the wild</strong><span>worldwide</span></div>
+    <div class="ev"><code>service.outage_started</code><strong>Service outage started</strong><span>Provider status page · worldwide</span></div>
+    <div class="ev"><code>insolvency.proceeding_opened</code><strong>Insolvency proceeding opened</strong><span>Lyon, France</span></div>
+  </div>
+</div>
+</body>
+</html>
