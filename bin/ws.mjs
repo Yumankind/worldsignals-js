@@ -21,7 +21,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.4.0";
+export const VERSION = "0.4.1";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -97,6 +97,8 @@ Events (signed with the agent key; or send a named or personal access key with -
                           text *= (contains) !*= ^= (starts with) $= (ends with), ignoring case and
                           accents, ~= !~= (regular expression); | between values (any of them):
                           --where 'data.cvss.base_score>=9'  --where 'subject.name*=bakery|pastry'
+                          Places (locality precision or finer): --where 'place.near=41.15,-8.61,10' (km),
+                          --where 'place.within=36.9,-9.6,42.2,-6.2' (south,west,north,east)
 
   ${p} watch [options] [-- <arguments for the program or agent>]
       Stay connected and handle each new event as it arrives. Picks up where it stopped last time,
