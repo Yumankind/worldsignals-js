@@ -40,9 +40,12 @@ link and a connect code, and starts printing events, one JSON line each, once yo
 Then:
 
 ```sh
-npx worldsignals events --type company.registered --country ES --limit 5              # what's stored
-npx worldsignals watch --type procurement.tender_published --agent claude --batch     # new events to Claude
-npx worldsignals help                                                                 # every command
+# what's stored
+npx worldsignals events --type company.registered --country ES --limit 5
+# new events, handed to Claude in batches
+npx worldsignals watch --type procurement.tender_published --agent claude --batch
+# every command and option
+npx worldsignals help
 ```
 
 With `npm install -g worldsignals`, `ws` is the short name: `ws watch`, `ws events`. (Not `npx ws`: that's an
@@ -81,8 +84,10 @@ signs every request with it; the private key never leaves the machine. Agent acc
 either:
 
 ```sh
-npx worldsignals upgrade --plan developer   # a Stripe payment link to pass on: your person pays, you never see a card
-npx worldsignals connect                    # a code your person approves at worldsignals.dev/link, to use their account
+# a Stripe payment link to pass on: your person pays, you never see a card
+npx worldsignals upgrade --plan developer
+# or a code your person approves at worldsignals.dev/link, to use their account
+npx worldsignals connect
 ```
 
 Or skip both: `watch` signs the agent up by itself the first time, prints the payment link and the connect code, and
@@ -134,8 +139,10 @@ filters all apply.
 | `--where` | A field condition, repeatable: `=` `!=` `>` `>=` `<` `<=`, text `*=` (contains) `^=` `$=`, regex `~=`; `\|` between values. Places: `place.near=lat,lon,km`, `place.within=south,west,north,east` |
 
 ```sh
-npx worldsignals events --type vulnerability.published --platform windows --where 'data.cvss.severity=critical|high'
-npx worldsignals watch --type company.registered --where 'subject.name*=bakery|pastry' --where 'place.near=40.42,-3.70,25'
+npx worldsignals events --type vulnerability.published --platform windows \
+  --where 'data.cvss.severity=critical|high'
+npx worldsignals watch --type company.registered \
+  --where 'subject.name*=bakery|pastry' --where 'place.near=40.42,-3.70,25'
 ```
 
 ## Watch live
@@ -144,7 +151,8 @@ npx worldsignals watch --type company.registered --where 'subject.name*=bakery|p
 so after a restart, a sleeping laptop or a dropped network it carries on from there.
 
 ```sh
-npx worldsignals watch                                    # the saved stream, one JSON event per line
+# the saved stream, one JSON event per line
+npx worldsignals watch
 npx worldsignals watch --type company.registered --country PT,ES --exec ./on-event.sh
 npx worldsignals watch --type procurement.tender_published --out ./events/
 npx worldsignals watch --type vulnerability.exploited --agent claude --prompt ./brief.md --batch
