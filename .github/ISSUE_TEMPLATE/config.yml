@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://worldsignals.dev/support#security
+    about: Please don't open a public issue. Email hello@worldsignals.dev with "Security" in the subject.
+  - name: Account, billing or data questions
+    url: https://worldsignals.dev/support
+    about: Help with your account, plan, agent accounts or an event about you.
+  - name: Docs
+    url: https://worldsignals.dev/docs#cli
+    about: The CLI, the events API, watch, filters, agent accounts and the MCP server.
+  - name: Event catalogue
+    url: https://worldsignals.dev/events
+    about: Every event type, its sources, and whether it's ready or planned.

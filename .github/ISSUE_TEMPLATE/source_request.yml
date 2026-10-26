@@ -1,0 +1,44 @@
+name: Request a source or event type
+description: An official register, public feed or kind of event you'd like WorldSignals to collect.
+labels: [source request]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [event catalogue](https://worldsignals.dev/events) lists every type, ready or planned, and where each comes from. Demand decides what comes next, so tell us what you'd build with it.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What are you asking for?
+      options:
+        - A new source for an existing event type (e.g. another country's company register)
+        - A new event type
+        - More fields in an existing event type
+    validations:
+      required: true
+  - type: input
+    id: event-type
+    attributes:
+      label: Event type
+      description: The existing type id, or a name for a new one.
+      placeholder: company.registered
+  - type: input
+    id: countries
+    attributes:
+      label: Countries
+      description: ISO codes, or XX for the whole world.
+      placeholder: PT, BR
+  - type: textarea
+    id: source
+    attributes:
+      label: The source
+      description: Who publishes it, a link, and its licence or terms of reuse if you know them. Public, official sources come first.
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: What you'd do with it
+      description: What your code or agent would do when one of these events arrives.
+    validations:
+      required: true
