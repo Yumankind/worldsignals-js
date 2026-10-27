@@ -97,14 +97,56 @@ deleted seven days after it was made, or after its plan ends.
 A named or personal access key from the [console](https://worldsignals.dev/console/account) works everywhere instead
 of the agent key: `--key wsk_…` or `WS_KEY=wsk_…`.
 
+### Answers as JSON
+
+Add `--json` and an agent gets the same answer as one JSON object, nothing to parse out of prose:
+
+```sh
+npx worldsignals watch --no-wait --json
+```
+
+```json
+{
+  "status": "unpaid",
+  "agent_id": "agt_…",
+  "pay": {
+    "url": "https://checkout.stripe.com/c/pay/cs_…",
+    "plan": "developer",
+    "billing": "monthly",
+    "test_mode": false
+  },
+  "connect": {
+    "user_code": "FQMP-LVZJ",
+    "verification_uri": "https://worldsignals.dev/link",
+    "verification_uri_complete": "https://worldsignals.dev/link?code=FQMP-LVZJ",
+    "expires_at": "2026-10-27T12:15:00.000Z"
+  },
+  "next": "Run the same command again once the agent is paid for or connected: it then starts watching."
+}
+```
+
+(Printed on one line; spread out here to read.) The field names are the API's own. A way that couldn't be made is
+`null` (why is said on stderr), and once the agent is paid for or connected, `watch` simply starts watching.
+
+- `watch --no-wait --json`: that object is the only line on stdout, exit 0.
+- `watch --json`, waiting: the object is a line of its own on stderr, and stdout stays one standard event per line,
+  as it always is for `watch`, so whatever reads the events never meets anything else.
+- `upgrade --json`: `{agent_id, pay, next}`; `connect --no-wait --json`: `{agent_id, connect, next}`. With
+  `upgrade --wait` or a waiting `connect`, a second line follows once it's done: the agent, as `status --json` has it.
+- `status --json`: the agent as WorldSignals answers it, plus `connect` while a code waits on this machine.
+- `signup --json`: `{status, agent_id, name, key_file, next}`.
+
+stdout holds JSON only and is never styled. Errors stay plain text on stderr with a non-zero exit, as for every
+command.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `signup` | The agent's account and its key on this machine (`--name`, `--label`, optional `--email`) |
-| `upgrade` | A payment link for the agent's own plan (`--plan developer\|team\|business`, `--yearly`, `--wait`) |
-| `connect` | Act for your person's account once they approve the code (`--email` also puts the request in their console) |
-| `status` | The agent, its plan or the account it's connected to |
+| `signup` | The agent's account and its key on this machine (`--name`, `--label`, optional `--email`, `--json`) |
+| `upgrade` | A payment link for the agent's own plan (`--plan developer\|team\|business`, `--yearly`, `--wait`, `--json`) |
+| `connect` | Act for your person's account once they approve the code (`--email` also puts the request in their console; `--no-wait`, `--json`) |
+| `status` | The agent, its plan or the account it's connected to (`--json`) |
 | `billing` | Stripe's billing portal for an agent that pays for its own plan: change plan or card, invoices, cancel |
 | `keys rotate` | A new key for this agent; the old one stops working |
 | `recover` | A new key for an agent whose key was lost, approved by the person who pays for it or connected it |

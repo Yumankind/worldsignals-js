@@ -587,6 +587,118 @@ test("watch --no-wait prints both ways on stdout and exits 0", async () => {
   assert.ok(!server.calls.some((c) => c.path === "/api/stream"));
 });
 
+// --json, for agents: the same answers as one object per line on stdout, the API's field names, never styled.
+const UNPAID = {
+  "GET /api/agent/me": () => [200, { agent_id: "agt_1", status: "unpaid" }],
+  "POST /api/agent/checkout": () => [200, { url: "https://checkout.stripe.com/c/pay/cs_test_5" }],
+  "POST /api/agent/connect": CONNECT,
+};
+
+test("watch --no-wait --json prints both ways as one JSON object on stdout, and nothing else there", async () => {
+  const { env, server } = await withAgent(UNPAID);
+  const io = capture();
+  // A terminal on both streams, and colour asked for: JSON is never styled.
+  const ctx = { fetch: server.fetch, env: { ...env, COLORTERM: "truecolor" }, tty: { out: true, err: true }, sleep: async () => assert.fail("no wait"), ...io };
+  assert.equal(await run(["watch", "--no-wait", "--json", "--plan", "team", "--yearly"], ctx), 0);
+  assert.equal(io.lines.out.length, 1, "one line");
+  assert.doesNotMatch(io.lines.out[0], /\x1b/);
+  const answer = JSON.parse(io.lines.out[0]);
+  const { expires_at, ...connect } = answer.connect;
+  assert.deepEqual({ ...answer, connect }, {
+    status: "unpaid",
+    agent_id: "agt_1",
+    pay: { url: "https://checkout.stripe.com/c/pay/cs_test_5", plan: "team", billing: "yearly", test_mode: false },
+    connect: { user_code: "ABCD-EFGH", verification_uri: "https://worldsignals.dev/link", verification_uri_complete: "https://worldsignals.dev/link?code=ABCD-EFGH" },
+    next: "Run the same command again once the agent is paid for or connected: it then starts watching.",
+  });
+  assert.ok(Date.parse(expires_at) > Date.now());
+  assert.equal(answer.connect.device_code, undefined, "the device code stays in the key file");
+  assert.deepEqual(io.lines.err, []);
+  assert.ok(!server.calls.some((c) => c.path === "/api/stream"));
+  // A way that failed is null, and why goes to stderr.
+  const half = await withAgent({ ...UNPAID, "POST /api/agent/checkout": () => [500, { error: "Stripe is down." }] });
+  const io2 = capture();
+  assert.equal(await run(["watch", "--no-wait", "--json"], { fetch: half.server.fetch, env: half.env, ...io2 }), 0);
+  assert.equal(JSON.parse(io2.lines.out[0]).pay, null);
+  assert.equal(JSON.parse(io2.lines.out[0]).connect.user_code, "ABCD-EFGH");
+  assert.match(io2.lines.err[0], /^No payment link \(500\): Stripe is down\.$/);
+});
+
+test("watch --json while waiting: the object is a line of its own on stderr, and stdout is the events only", async () => {
+  let mes = 0;
+  const env = agentEnv();
+  const server = await watchServer({ ...INIT, ...UNPAID, "GET /api/agent/me": () => (++mes >= 2 ? [200, { agent_id: "agt_1", status: "connected" }] : [200, { agent_id: "agt_1", status: "unpaid" }]) });
+  assert.equal(await run(["signup"], { fetch: server.fetch, env, ...capture() }), 0);
+  const io = capture();
+  const state = join(mkdtempSync(join(tmpdir(), "ws-cli-")), "watch.json");
+  const ctx = { fetch: server.fetch, env, tty: { out: true, err: true }, stdin: null, sleep: async () => {}, ...io };
+  assert.equal(await run(["watch", "--json", "--once", "--state", state], ctx), 0);
+  const objects = io.lines.err.filter((l) => l.startsWith("{"));
+  assert.equal(objects.length, 1);
+  const answer = JSON.parse(objects[0]);
+  assert.equal(answer.pay.url, "https://checkout.stripe.com/c/pay/cs_test_5");
+  assert.equal(answer.connect.user_code, "ABCD-EFGH");
+  assert.match(answer.next, /^Waiting for the payment or the approval/);
+  assert.doesNotMatch(io.lines.err.join("\n"), /\x1b|Press Enter|Either way works/);
+  assert.deepEqual(io.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
+});
+
+test("upgrade --json and connect --json answer one object; with --wait, a second line once done; errors stay on stderr", async () => {
+  let paid = false;
+  const { env, server } = await withAgent({
+    ...UNPAID,
+    "GET /api/agent/me": () => [200, { agent_id: "agt_1", status: paid ? "paid" : "unpaid", plan: paid ? "developer" : null }],
+    "POST /api/agent/checkout": () => [200, { url: "https://checkout.stripe.com/c/pay/cs_test_6", test_mode: true }],
+  });
+  const io = capture();
+  assert.equal(await run(["upgrade", "--json", "--no-open"], { fetch: server.fetch, env, tty: { out: true }, ...io }), 0);
+  assert.equal(io.lines.out.length, 1);
+  assert.deepEqual(JSON.parse(io.lines.out[0]), {
+    agent_id: "agt_1",
+    pay: { url: "https://checkout.stripe.com/c/pay/cs_test_6", plan: "developer", billing: "monthly", test_mode: true },
+    next: "Once it's paid, ws status --json shows the plan.",
+  });
+  const waited = capture();
+  assert.equal(await run(["upgrade", "--json", "--wait", "--no-open"], { fetch: server.fetch, env, sleep: async () => void (paid = true), ...waited }), 0);
+  assert.equal(waited.lines.out.length, 2);
+  assert.equal(JSON.parse(waited.lines.out[0]).pay.url, "https://checkout.stripe.com/c/pay/cs_test_6");
+  assert.equal(JSON.parse(waited.lines.out[1]).status, "paid");
+
+  const code = capture();
+  assert.equal(await run(["connect", "--no-wait", "--json"], { fetch: server.fetch, env, tty: { out: true }, sleep: async () => assert.fail("no wait"), ...code }), 0);
+  assert.equal(code.lines.out.length, 1);
+  assert.doesNotMatch(code.lines.out[0], /\x1b/);
+  const answer = JSON.parse(code.lines.out[0]);
+  assert.equal(answer.agent_id, "agt_1");
+  assert.equal(answer.connect.verification_uri_complete, "https://worldsignals.dev/link?code=ABCD-EFGH");
+  assert.match(answer.next, /^Run ws connect --json again/);
+  // status --json carries the code still waiting here.
+  paid = false;
+  const status = capture();
+  assert.equal(await run(["status", "--json"], { fetch: server.fetch, env, ...status }), 0);
+  assert.equal(JSON.parse(status.lines.out[0]).connect.user_code, "ABCD-EFGH");
+
+  const already = await withAgent({ "POST /api/agent/checkout": () => [409, { error: "This agent is already paid for." }] });
+  const refused = capture();
+  assert.equal(await run(["upgrade", "--json", "--no-open"], { fetch: already.server.fetch, env: already.env, ...refused }), 1);
+  assert.deepEqual(refused.lines.out, [], "nothing on stdout");
+  assert.match(refused.lines.err[0], /already paid for/);
+});
+
+test("signup --json answers the new agent and what to run next", async () => {
+  const io = capture();
+  const env = agentEnv();
+  assert.equal(await run(["signup", "--json", "--name", "My agent"], { ...(await agentServer(INIT)), env, ...io }), 0);
+  assert.deepEqual(JSON.parse(io.lines.out[0]), {
+    status: "unpaid",
+    agent_id: "agt_1",
+    name: "Claude Code",
+    key_file: agentPath(env),
+    next: "Either ws upgrade --json for a payment link, or ws connect --no-wait --json for a code the person you work for approves.",
+  });
+  assert.equal(io.lines.out.length, 1);
+});
+
 test("watch --no-signup, or an access key, keeps the old behaviour: no signup", async () => {
   const io = capture();
   assert.equal(await run(["watch", "--no-signup"], { fetch: () => assert.fail("no request"), env: agentEnv(), ...io }), 2);

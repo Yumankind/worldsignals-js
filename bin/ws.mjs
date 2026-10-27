@@ -36,7 +36,7 @@ Get started (no email needed):
   ${p} events     and read events
 
 Your agent:
-  ${p} signup [--name <name>] [--label <label>] [--email <email>] [--force]
+  ${p} signup [--name <name>] [--label <label>] [--email <email>] [--force] [--json]
       Create the agent's account and its key on this device: an Ed25519 key pair made here, whose private key never
       leaves it. It is kept in ~/.config/worldsignals/agent.json, readable only by you (a file, not the
       OS keychain), and every request is signed with it.
@@ -45,23 +45,29 @@ Your agent:
       --label <label>    tells your agents apart, e.g. laptop or ci
       --email <email>    optional; WorldSignals sends no email to it
       --force            replace the agent key already on this device (the old one can't be used again)
+      --json             the new agent as one JSON object: {status, agent_id, name, key_file, next}
 
-  ${p} upgrade [--plan developer|team|business] [--yearly] [--wait] [--no-open]
+  ${p} upgrade [--plan developer|team|business] [--yearly] [--wait] [--no-open] [--json]
       Print a Stripe payment link for the agent's own plan (default: developer, monthly) and open it in
       the browser. Whoever pays gives Stripe their email, for receipts, and can manage the subscription
       from their WorldSignals console with that email. Agent accounts have no free plan.
       --wait             wait until the payment goes through (Ctrl+C stops)
+      --json             the link as one JSON object: {agent_id, pay: {url, plan, billing, test_mode}, next};
+                         with --wait, a second line once paid: the agent, as ${p} status --json shows it
       With --key or WS_KEY, the link is for that personal access key's account instead.
 
-  ${p} connect [--email <email>] [--no-wait]
+  ${p} connect [--email <email>] [--no-wait] [--json]
       Connect the agent to a person's WorldSignals account: it then uses that account's plan and streams,
       and the person can revoke it any time in their console. Prints a code to enter at
       https://worldsignals.dev/link, signed in, and waits until it is approved or denied.
       --email <email>    the person's email, if you know it: the request also waits in their console
       --no-wait          print the code and exit; run ${p} connect again to wait for the same code
+      --json             the code as one JSON object: {agent_id, connect: {user_code, verification_uri,
+                         verification_uri_complete, expires_at}, next}; waiting, a second line once approved
 
   ${p} status [--json]
       Show the agent: its id, name, whether it is paid for or connected, its plan and until when.
+      --json             the agent as WorldSignals answers it, plus connect: the code still waiting, if any
   ${p} billing [--no-open]
       Open Stripe's billing portal for the agent's own subscription (paid agents only): change the
       plan or the card, see invoices, cancel.
@@ -108,6 +114,10 @@ Events (signed with the agent key; or send a named or personal access key with -
       and the connect code and waits (up to 30 minutes), then starts watching.
       --plan <plan>, --yearly  the plan the payment link is for (default: developer, monthly)
       --no-wait          print the payment link and the connect code, and exit
+      --json             for agents, both ways as one JSON object: {status, agent_id, pay: {url, plan,
+                         billing, test_mode}, connect: {user_code, verification_uri, verification_uri_complete,
+                         expires_at}, next}. With --no-wait it is the only thing on stdout; while waiting it
+                         is a line of its own on stderr, as stdout is the events' alone
       --no-signup        never sign up: without a key, say how to get one and exit
       --type <ids>       event types (default: the saved stream's)
       --country <codes>  ISO codes; XX is the events about the whole world (default: the saved stream's)
@@ -124,6 +134,9 @@ Events (signed with the agent key; or send a named or personal access key with -
       --state <file>     where to remember the last event handled (default ~/.config/worldsignals/watch.json);
                          give each watcher its own
       --once             handle what is waiting, then exit: for cron and scheduled jobs
+
+With --json, stdout is JSON only, one object per line, never styled; errors stay plain text on stderr, with a
+non-zero exit.
 
 Environment:
   WS_API   server to talk to (default ${DEFAULT_API})
@@ -443,6 +456,21 @@ function standing(me, p) {
   return `Not paid for yet. ${p} upgrade prints a payment link; ${p} connect connects it to the account of the person you work for.`;
 }
 
+// --json, for agents: the same answer as one JSON object, with the API's own field names. Errors stay plain text on
+// stderr with a non-zero exit, as for ws events, so stdout only ever holds the answer.
+
+/** A payment link as --json gives it: what POST /api/agent/checkout was asked for and answered. */
+const payJson = (body, plan, billing) => ({ url: body.url, plan: body.plan ?? plan, billing: body.billing ?? billing, test_mode: Boolean(body.test_mode) });
+/** A connect code as --json gives it: what POST /api/agent/connect answered, and until when it works. The device_code
+ * stays in the key file, for ws connect to wait with. */
+const connectJson = (flow) => ({
+  user_code: flow.user_code,
+  verification_uri: flow.verification_uri ?? `${DEFAULT_API}/link`,
+  verification_uri_complete: flow.verification_uri_complete ?? null,
+  expires_at: flow.expires_at,
+  ...(flow.email ? { email: flow.email } : {}),
+});
+
 /**
  * Makes a key pair and sends it to POST /api/agent/init (signed with it, no X-WS-Agent): ws signup, ws recover and a
  * first ws watch. The key is saved before it is sent, so an agent the server makes is never left without its key
@@ -492,7 +520,7 @@ async function initCommand(rest, ctx, { recover = false } = {}) {
   const OLD = ["type", "country", "plan", "billing", "company", "role", "use-case", "agent-version"];
   const { values } = parseArgs({
     args: rest,
-    options: { name: str, label: str, email: str, force: { type: "boolean" }, "no-wait": { type: "boolean" }, agent: str, ...Object.fromEntries(OLD.map((k) => [k, str])) },
+    options: { name: str, label: str, email: str, force: { type: "boolean" }, "no-wait": { type: "boolean" }, agent: str, ...(recover ? {} : { json: { type: "boolean" } }), ...Object.fromEntries(OLD.map((k) => [k, str])) },
   });
   values.name ??= values.agent;
   const old = OLD.filter((k) => values[k] !== undefined);
@@ -549,6 +577,16 @@ async function initCommand(rest, ctx, { recover = false } = {}) {
     };
     saveAgent(env, api, entry);
     return finishRecover(ctx, entry, values);
+  }
+  if (values.json) {
+    out(JSON.stringify({
+      status: body.status ?? "unpaid",
+      agent_id: body.agent_id,
+      name: body.name ?? payload.name ?? null,
+      key_file: agentPath(env),
+      next: `Either ${p} upgrade --json for a payment link, or ${p} connect --no-wait --json for a code the person you work for approves.`,
+    }));
+    return 0;
   }
   out(`Agent ${body.agent_id} created${body.name ?? payload.name ? ` (${body.name ?? payload.name})` : ""}.`);
   out(`Its private key is in ${agentPath(env)}, readable only by you. It never leaves this device: every request is signed with it.`);
@@ -629,7 +667,7 @@ async function payCommand(rest, ctx) {
   const { out, err, p, env, spawn, platform, pause, signal } = ctx;
   const { values } = parseArgs({
     args: rest,
-    options: { plan: { type: "string" }, yearly: { type: "boolean" }, billing: { type: "string" }, wait: { type: "boolean" }, "no-open": { type: "boolean" }, key: { type: "string" } },
+    options: { plan: { type: "string" }, yearly: { type: "boolean" }, billing: { type: "string" }, wait: { type: "boolean" }, "no-open": { type: "boolean" }, key: { type: "string" }, json: { type: "boolean" } },
   });
   const plan = (values.plan ?? "developer").toLowerCase();
   const billing = values.yearly ? "yearly" : (values.billing ?? "monthly");
@@ -650,11 +688,16 @@ async function payCommand(rest, ctx) {
     err(status === 401 ? signatureRefused(p, body) : `No payment link (${status}): ${body.error ?? "no details"}`);
     return 1;
   }
-  out(`Payment link for the ${planName(plan)} plan (${billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay: Stripe asks for the payer's email, for receipts, and the agent's access starts as soon as the payment goes through.`);
-  out(ctx.style.out.link(body.url));
+  if (values.json) {
+    const next = values.wait ? "Waiting for the payment to go through; the agent comes as a second line once it has." : `Once it's paid, ${p} status --json shows the plan.`;
+    out(JSON.stringify({ agent_id: agent.agent_id, pay: payJson(body, plan, billing), next }));
+  } else {
+    out(`Payment link for the ${planName(plan)} plan (${billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay: Stripe asks for the payer's email, for receipts, and the agent's access starts as soon as the payment goes through.`);
+    out(ctx.style.out.link(body.url));
+  }
   if (!values["no-open"] && openBrowser(spawn, body.url, env, platform)) err("Opened it in your browser.");
   if (!values.wait) {
-    out(`Then ${p} status shows the plan (or run ${p} upgrade --wait to wait for the payment).`);
+    if (!values.json) out(`Then ${p} status shows the plan (or run ${p} upgrade --wait to wait for the payment).`);
     return 0;
   }
   err("Waiting for the payment to go through (Ctrl+C stops).");
@@ -667,6 +710,11 @@ async function payCommand(rest, ctx) {
     }
     const me = await agentCall(ctx, agent.private_key, agent.agent_id, "GET", "/api/agent/me").catch(() => ({ status: 0, body: {} }));
     if (me.status === 200 && (me.body.status === "paid" || me.body.status === "connected")) {
+      // With --json, the second line: the agent, as ws status --json shows it.
+      if (values.json) {
+        out(JSON.stringify(me.body));
+        return 0;
+      }
       out(standing(me.body, p));
       out(`Try ${p} events, or ${p} watch to follow new events as they arrive.`);
       return 0;
@@ -691,8 +739,11 @@ async function upgradeKey(ctx, key, plan, billing, values) {
     err(res.status === 401 ? KEY_DOESNT_WORK : `No payment link (${res.status}): ${body.error ?? "no details"}`);
     return 1;
   }
-  out(`Payment link for ${body.plan ?? plan} (${body.billing ?? billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay; the plan starts as soon as the payment goes through:`);
-  out(ctx.style.out.link(body.url));
+  if (values.json) out(JSON.stringify({ pay: payJson(body, plan, billing), next: "The plan starts as soon as the payment goes through." }));
+  else {
+    out(`Payment link for ${body.plan ?? plan} (${body.billing ?? billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay; the plan starts as soon as the payment goes through:`);
+    out(ctx.style.out.link(body.url));
+  }
   if (!values["no-open"] && openBrowser(spawn, body.url, env, platform)) err("Opened it in your browser.");
   return 0;
 }
@@ -727,7 +778,7 @@ async function portalCommand(rest, ctx) {
 // connect again keeps waiting for it.
 async function connectCommand(rest, ctx) {
   const { env, api, out, err, p } = ctx;
-  const { values } = parseArgs({ args: rest, options: { email: { type: "string" }, "no-wait": { type: "boolean" } } });
+  const { values } = parseArgs({ args: rest, options: { email: { type: "string" }, "no-wait": { type: "boolean" }, json: { type: "boolean" } } });
   if (values.email && !EMAIL.test(values.email)) {
     err(`--email needs the person's email address, like ana@example.com.`);
     return 2;
@@ -754,16 +805,24 @@ async function connectCommand(rest, ctx) {
       saveAgent(env, api, { ...agent, connect: flow });
     } catch {} // waiting works without it; only a later connect can't pick the code up again
   }
-  const minutes = Math.max(1, Math.round((Date.parse(flow.expires_at) - Date.now()) / 60_000));
-  const look = ctx.style.out;
-  out("To connect this agent to your WorldSignals account (or that of the person you work for), sign in and:");
-  out(`  Open ${look.link(flow.verification_uri ?? `${DEFAULT_API}/link`)} and enter ${look.strong(flow.user_code)}`);
-  if (flow.verification_uri_complete) out(`  or open ${look.link(flow.verification_uri_complete)}`);
-  if (flow.email) out(`A request is also waiting in that person's console (${flow.email}): they can approve it there.`);
-  out(`The code works for ${minutes} more minute${minutes === 1 ? "" : "s"}. The agent then acts for that account: its plan and its streams.`);
-  if (values["no-wait"]) {
-    out(`Run ${p} connect again to wait for the approval, or ${p} status once it's approved.`);
-    return 0;
+  if (values.json) {
+    const next = values["no-wait"]
+      ? `Run ${p} connect --json again to wait for the approval, or ${p} status --json once it's approved.`
+      : "Waiting for the approval; the agent comes as a second line once it's approved.";
+    out(JSON.stringify({ agent_id: agent.agent_id, connect: connectJson(flow), next }));
+    if (values["no-wait"]) return 0;
+  } else {
+    const minutes = Math.max(1, Math.round((Date.parse(flow.expires_at) - Date.now()) / 60_000));
+    const look = ctx.style.out;
+    out("To connect this agent to your WorldSignals account (or that of the person you work for), sign in and:");
+    out(`  Open ${look.link(flow.verification_uri ?? `${DEFAULT_API}/link`)} and enter ${look.strong(flow.user_code)}`);
+    if (flow.verification_uri_complete) out(`  or open ${look.link(flow.verification_uri_complete)}`);
+    if (flow.email) out(`A request is also waiting in that person's console (${flow.email}): they can approve it there.`);
+    out(`The code works for ${minutes} more minute${minutes === 1 ? "" : "s"}. The agent then acts for that account: its plan and its streams.`);
+    if (values["no-wait"]) {
+      out(`Run ${p} connect again to wait for the approval, or ${p} status once it's approved.`);
+      return 0;
+    }
   }
   const result = await waitForApproval(ctx, agent.private_key, agent.agent_id, flow);
   const forget = () => {
@@ -776,6 +835,10 @@ async function connectCommand(rest, ctx) {
   if (result.status !== "approved") return result.code;
   forget();
   const me = await agentCall(ctx, agent.private_key, agent.agent_id, "GET", "/api/agent/me").catch(() => ({ status: 0, body: {} }));
+  if (values.json) {
+    out(JSON.stringify(me.status === 200 ? me.body : { agent_id: agent.agent_id, status: "connected" }));
+    return 0;
+  }
   out(me.status === 200 ? standing(me.body, p) : "Connected: the agent now acts for that account, with its plan and its streams.");
   out(`Try ${p} events, ${p} stream, or ${p} watch to follow new events as they arrive. The person can revoke the agent any time in their console.`);
   return 0;
@@ -792,8 +855,10 @@ async function statusCommand(rest, ctx) {
     err(status === 401 ? signatureRefused(p, body) : `Couldn't read the agent (${status}): ${body.error ?? "no details"}`);
     return 1;
   }
+  const waiting = agent.connect && Date.parse(agent.connect.expires_at) > Date.now() && body.status !== "connected";
   if (values.json) {
-    out(JSON.stringify(body));
+    // The agent as WorldSignals answers it, with the connect code still waiting here, if there is one.
+    out(JSON.stringify(waiting ? { ...body, connect: connectJson(agent.connect) } : body));
     return 0;
   }
   const named = [body.name, body.label].filter(Boolean).join(", ");
@@ -801,7 +866,7 @@ async function statusCommand(rest, ctx) {
   out(`Status:  ${standing(body, p)}`);
   if (body.can_portal) out(`Billing: ${p} billing manages its own subscription.`);
   out(`Key:     ${agentPath(env)} (this device only)`);
-  if (agent.connect && Date.parse(agent.connect.expires_at) > Date.now() && body.status !== "connected") {
+  if (waiting) {
     out(`Waiting: a connect code, ${agent.connect.user_code}; ${p} connect keeps waiting for it.`);
   }
   return 0;
@@ -1002,7 +1067,8 @@ const READY_WAIT_MS = 30 * 60_000;
  * Before ws watch starts: an agent key that can read events. With none on this device, makes one as ws signup does
  * (the default name, no email). Unpaid and unconnected, prints both ways forward (a payment link and a connect code),
  * one plain line each, so a person or an agent reading the output can pass them on; then waits until /api/agent/me
- * says paid or connected (or, with --no-wait, exits 0). Answers {} to go on watching, or {code} to stop.
+ * says paid or connected (or, with --no-wait, exits 0). With --json, both ways as one JSON object instead. Answers {}
+ * to go on watching, or {code} to stop.
  */
 async function readyAgent(ctx, values) {
   const { env, api, out, err, p, signal, spawn, platform, style, stdin } = ctx;
@@ -1062,6 +1128,28 @@ async function readyAgent(ctx, values) {
   if (!pay.body.url && !flow) {
     err(`Couldn't make a payment link either (${pay.status || "no answer"}): ${pay.body.error ?? "no details"}. Try ${p} upgrade or ${p} connect.`);
     return { code: 1 };
+  }
+  // With --json, both ways as one object. With --no-wait it is the whole answer, on stdout; while waiting it is a line
+  // of its own on stderr, as stdout is the events' alone (one standard event per line, for whatever reads it). A way
+  // that failed is null, and why goes to stderr.
+  if (values.json) {
+    if (!pay.body.url) err(`No payment link (${pay.status || "no answer"}): ${pay.body.error ?? "no details"}`);
+    const answer = {
+      status: first.body.status ?? "unpaid",
+      agent_id: agent.agent_id,
+      pay: pay.body.url ? payJson(pay.body, plan, billing) : null,
+      connect: flow ? connectJson(flow) : null,
+      next: values["no-wait"]
+        ? "Run the same command again once the agent is paid for or connected: it then starts watching."
+        : "Waiting for the payment or the approval; then watching, with the events on stdout.",
+    };
+    if (values["no-wait"]) {
+      out(JSON.stringify(answer));
+      return { code: 0 };
+    }
+    err(JSON.stringify(answer));
+    err("Waiting for the payment or the approval, then watching (Ctrl+C stops; the agent key stays saved for next time).");
+    return waitReady(ctx, agent, me, ok);
   }
   // With --no-wait the lines are the answer, on stdout; while waiting, stdout is kept for the events.
   const say = values["no-wait"] ? out : err;
@@ -1140,7 +1228,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause,
     options: {
       type: str, country: str, key: str, from: str, state: str, exec: str, agent: str, prompt: str, out: str, timeout: str, ...FILTER_OPTIONS,
       "batch-idle": str, "batch-max-wait": str, "batch-max": str, batch: { type: "boolean" }, once: { type: "boolean" },
-      "no-signup": { type: "boolean" }, "no-wait": { type: "boolean" }, plan: str, yearly: { type: "boolean" },
+      "no-signup": { type: "boolean" }, "no-wait": { type: "boolean" }, plan: str, yearly: { type: "boolean" }, json: { type: "boolean" },
     },
   });
   let auth = credentials(values, env, api);

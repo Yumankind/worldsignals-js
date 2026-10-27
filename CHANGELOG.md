@@ -3,6 +3,18 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## Unreleased
+
+- `--json` for agents on `watch`, `upgrade`, `connect` and `signup`: the payment link and the connect code as one
+  JSON object, with the API's field names (`pay.url`, `pay.plan`, `pay.billing`, `connect.user_code`,
+  `connect.verification_uri`, `connect.verification_uri_complete`, `connect.expires_at`) and a `next` sentence.
+- `watch --no-wait --json` prints that object and nothing else on stdout, and exits 0. Waiting, `watch --json`
+  writes it as a line of its own on stderr, so stdout stays one standard event per line.
+- `upgrade --wait --json` and a waiting `connect --json` add a second line once done: the agent, as
+  `status --json` shows it. `status --json` also carries the connect code still waiting on this machine.
+- JSON output is never styled, even at a terminal. Errors stay plain text on stderr with a non-zero exit.
+  Output without `--json` is unchanged.
+
 ## 0.4.4 (2026-10-27)
 
 - `watch`, for an agent not yet paid for or connected, lays out its two ways forward with a label each (Pay,
