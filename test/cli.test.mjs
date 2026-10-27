@@ -508,8 +508,11 @@ test("watch with no key signs the agent up, shows the payment link and the conne
   assert.ok(server.calls.every((c) => c.signed));
   const said = io.lines.err.join("\n");
   assert.match(io.lines.err[0], /^No agent key on this device yet: making one, as ws signup would\.$/);
-  assert.match(said, /^Pay for its own Team plan .*: https:\/\/checkout\.stripe\.com\/c\/pay\/cs_test_1$/m);
-  assert.match(said, /^Or connect it to your account: open https:\/\/worldsignals\.dev\/link and enter ABCD-EFGH /m);
+  // A label each, the link on a line of its own; plain text, as an agent reads it.
+  assert.match(said, /^  Pay      for its own Team plan, monthly \(Stripe asks the payer's email, for receipts\)\n {11}https:\/\/checkout\.stripe\.com\/c\/pay\/cs_test_1$/m);
+  assert.match(said, /^  Connect  it to your account, signed in: enter ABCD-EFGH at https:\/\/worldsignals\.dev\/link\n {11}https:\/\/worldsignals\.dev\/link\?code=ABCD-EFGH$/m);
+  assert.doesNotMatch(said, /\x1b/, "no styling off a terminal");
+  assert.doesNotMatch(said, /Press Enter/);
   assert.match(said, /Paid for: the Team plan/);
   for (const line of io.lines.err) assert.doesNotMatch(line, /\n/, "one plain line each");
   assert.deepEqual(waits, [5000, 7500], "gently, backing off");
@@ -532,6 +535,41 @@ test("watch with an unpaid key shows the links and waits; Ctrl+C stops and keeps
   assert.match(io.lines.err.at(-1), /^Stopped waiting\. The agent key is saved/);
   assert.equal(readAgent(env, "https://ws.test").agent_id, "agt_1");
   assert.equal(readAgent(env, "https://ws.test").connect.user_code, "ABCD-EFGH", "the code is kept for the next run");
+});
+
+test("watch at a terminal: orange labels, whole links clickable, and Enter opens the payment page (c, the connect page)", async () => {
+  const { env, server } = await withAgent({
+    "GET /api/agent/me": () => [200, { agent_id: "agt_1", status: "unpaid" }],
+    "POST /api/agent/checkout": () => [200, { url: "https://checkout.stripe.com/c/pay/cs_test_4" }],
+    "POST /api/agent/connect": CONNECT,
+  });
+  const { PassThrough } = await import("node:stream");
+  const stdin = new PassThrough();
+  const opened = [];
+  const spawn = (command, args) => (opened.push(args.at(-1)), { on() {}, unref() {} });
+  const stop = new AbortController();
+  const io = capture();
+  let waits = 0;
+  const sleep = async () => {
+    if (++waits === 1) stdin.write("\n");
+    else if (waits === 2) stdin.write("c\n");
+    else stop.abort();
+    await new Promise((r) => setImmediate(r));
+  };
+  const ctx = { fetch: server.fetch, env: { ...env, COLORTERM: "truecolor" }, signal: stop.signal, sleep, spawn, platform: "darwin", tty: { err: true }, stdin, ...io };
+  assert.equal(await run(["watch"], ctx), 1);
+  const said = io.lines.err.join("\n");
+  assert.match(said, /\x1b\[1;38;2;255;106;51mPay {6}\x1b\[0m/, "the label in WorldSignals' orange");
+  assert.match(said, /\x1b\]8;;https:\/\/checkout\.stripe\.com\/c\/pay\/cs_test_4\x1b\\/, "the payment link clickable as a whole");
+  assert.match(said, /enter \x1b\[1mABCD-EFGH\x1b\[22m/);
+  assert.match(said, /Press Enter to open the payment page, or c and Enter to connect instead\./);
+  assert.deepEqual(opened, ["https://checkout.stripe.com/c/pay/cs_test_4", "https://worldsignals.dev/link?code=ABCD-EFGH"]);
+  assert.equal(stdin.isPaused(), true, "the terminal is let go once it stops waiting");
+  // NO_COLOR, or no terminal for input: plain, and nothing to press.
+  const plain = capture();
+  const stop2 = new AbortController();
+  await run(["watch"], { ...ctx, env: { ...env, NO_COLOR: "1" }, stdin: null, signal: stop2.signal, sleep: async () => stop2.abort(), ...plain });
+  assert.doesNotMatch(plain.lines.err.join("\n"), /\x1b|Press Enter/);
 });
 
 test("watch --no-wait prints both ways on stdout and exits 0", async () => {

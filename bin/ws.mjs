@@ -17,6 +17,7 @@ import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign } 
 import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
+import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -287,12 +288,14 @@ function refused(status, body, auth, p) {
 const PAY_POLL_MS = 5_000;
 const PAY_WAIT_MS = 3_600_000;
 
+/** Whether there is a browser to open links in: not in CI, not with WS_NO_OPEN, and on Linux only with a display. */
+const canOpen = (env, platform) => !env.WS_NO_OPEN && !env.CI && (platform === "darwin" || platform === "win32" || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY));
+
 /** Opens a link in the browser, where there is one. Never through a shell; failing quietly is fine, the link is printed. */
 function openBrowser(spawn, url, env, platform) {
-  if (env.WS_NO_OPEN || env.CI) return false;
+  if (!canOpen(env, platform)) return false;
   const [command, args] =
     platform === "darwin" ? ["open", [url]] : platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
-  if (platform !== "darwin" && platform !== "win32" && !env.DISPLAY && !env.WAYLAND_DISPLAY) return false;
   try {
     const child = spawn(command, args, { stdio: "ignore", detached: true });
     child.on?.("error", () => {});
@@ -303,13 +306,33 @@ function openBrowser(spawn, url, env, platform) {
   }
 }
 
+const PLAIN = { on: false, label: (s) => s, strong: (s) => s, dim: (s) => s, link: (url) => url };
+
+/**
+ * How lines look on one stream. For a person at a terminal: labels in WorldSignals' orange, codes in bold, and links
+ * clickable as a whole even where they wrap (OSC 8; terminals without it show the same link, underlined). Plain text
+ * for pipes, agents' shells, CI, NO_COLOR and TERM=dumb, so what agents read never changes.
+ */
+export function looks(tty, env = {}) {
+  if (!tty || env.NO_COLOR || env.TERM === "dumb" || env.CI) return PLAIN;
+  const orange = /truecolor|24bit/.test(env.COLORTERM ?? "") ? "38;2;255;106;51" : "38;5;202";
+  return {
+    on: true,
+    label: (s) => `\x1b[1;${orange}m${s}\x1b[0m`,
+    strong: (s) => `\x1b[1m${s}\x1b[22m`,
+    dim: (s) => `\x1b[2m${s}\x1b[22m`,
+    link: (url) => `\x1b]8;;${url}\x1b\\\x1b[4m${url}\x1b[24m\x1b]8;;\x1b\\`,
+  };
+}
+
 /**
  * Runs one command. Returns the exit code; writes to `out` and `err`. `name` is how messages name the tool
- * (commandName); `sleep` is for tests of the commands that wait; `platform` picks how to open the browser.
+ * (commandName); `sleep` is for tests of the commands that wait; `platform` picks how to open the browser. `tty` says which
+ * of out and err are a terminal (styled for a person; plain otherwise), and `stdin` is the terminal's, for Enter to open a link.
  */
 export async function run(
   argv,
-  { fetch = globalThis.fetch, env = process.env, out = console.log, err = console.error, spawn = nodeSpawn, signal, sleep: pause = sleep, name: p = "ws", platform = process.platform } = {},
+  { fetch = globalThis.fetch, env = process.env, out = console.log, err = console.error, spawn = nodeSpawn, signal, sleep: pause = sleep, name: p = "ws", platform = process.platform, tty = {}, stdin = null } = {},
 ) {
   const api = (env.WS_API || DEFAULT_API).replace(/\/$/, "");
   const [command, ...rest] = argv;
@@ -328,7 +351,8 @@ export async function run(
     return 2;
   }
 
-  const ctx = { api, fetch, env, out, err, spawn, signal, pause, p, platform };
+  const style = { out: looks(tty.out, env), err: looks(tty.err, env) };
+  const ctx = { api, fetch, env, out, err, spawn, signal, pause, p, platform, style, stdin };
   // init, pay and portal are the earlier names of signup, upgrade and billing, kept working.
   if (command === "signup" || command === "init") return initCommand(rest, ctx);
   if (command === "recover") return initCommand(rest, ctx, { recover: true });
@@ -538,9 +562,10 @@ async function initCommand(rest, ctx, { recover = false } = {}) {
 
 async function finishRecover(ctx, entry, values) {
   const { env, api, out, err, p } = ctx;
+  const look = ctx.style.out;
   out("To bind this new key to your existing agent, the person it is connected to (or who paid for it) approves it, signed in:");
-  out(`  Open ${entry.verification_uri ?? `${DEFAULT_API}/link`} and enter ${entry.user_code}`);
-  if (entry.verification_uri_complete) out(`  or open ${entry.verification_uri_complete}`);
+  out(`  Open ${look.link(entry.verification_uri ?? `${DEFAULT_API}/link`)} and enter ${look.strong(entry.user_code)}`);
+  if (entry.verification_uri_complete) out(`  or open ${look.link(entry.verification_uri_complete)}`);
   if (!entry.device_code || values["no-wait"]) {
     out(`Once it's approved, ${p} status shows the agent.`);
     return 0;
@@ -626,7 +651,7 @@ async function payCommand(rest, ctx) {
     return 1;
   }
   out(`Payment link for the ${planName(plan)} plan (${billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay: Stripe asks for the payer's email, for receipts, and the agent's access starts as soon as the payment goes through.`);
-  out(body.url);
+  out(ctx.style.out.link(body.url));
   if (!values["no-open"] && openBrowser(spawn, body.url, env, platform)) err("Opened it in your browser.");
   if (!values.wait) {
     out(`Then ${p} status shows the plan (or run ${p} upgrade --wait to wait for the payment).`);
@@ -667,7 +692,7 @@ async function upgradeKey(ctx, key, plan, billing, values) {
     return 1;
   }
   out(`Payment link for ${body.plan ?? plan} (${body.billing ?? billing})${body.test_mode ? ", Stripe test mode" : ""}. Open it to pay; the plan starts as soon as the payment goes through:`);
-  out(body.url);
+  out(ctx.style.out.link(body.url));
   if (!values["no-open"] && openBrowser(spawn, body.url, env, platform)) err("Opened it in your browser.");
   return 0;
 }
@@ -692,7 +717,7 @@ async function portalCommand(rest, ctx) {
     return 1;
   }
   out("Stripe's billing portal for this agent's subscription (change the plan or the card, see invoices, cancel):");
-  out(body.url);
+  out(ctx.style.out.link(body.url));
   if (!values["no-open"] && openBrowser(spawn, body.url, env, platform)) err("Opened it in your browser.");
   return 0;
 }
@@ -730,9 +755,10 @@ async function connectCommand(rest, ctx) {
     } catch {} // waiting works without it; only a later connect can't pick the code up again
   }
   const minutes = Math.max(1, Math.round((Date.parse(flow.expires_at) - Date.now()) / 60_000));
+  const look = ctx.style.out;
   out("To connect this agent to your WorldSignals account (or that of the person you work for), sign in and:");
-  out(`  Open ${flow.verification_uri ?? `${DEFAULT_API}/link`} and enter ${flow.user_code}`);
-  if (flow.verification_uri_complete) out(`  or open ${flow.verification_uri_complete}`);
+  out(`  Open ${look.link(flow.verification_uri ?? `${DEFAULT_API}/link`)} and enter ${look.strong(flow.user_code)}`);
+  if (flow.verification_uri_complete) out(`  or open ${look.link(flow.verification_uri_complete)}`);
   if (flow.email) out(`A request is also waiting in that person's console (${flow.email}): they can approve it there.`);
   out(`The code works for ${minutes} more minute${minutes === 1 ? "" : "s"}. The agent then acts for that account: its plan and its streams.`);
   if (values["no-wait"]) {
@@ -979,7 +1005,7 @@ const READY_WAIT_MS = 30 * 60_000;
  * says paid or connected (or, with --no-wait, exits 0). Answers {} to go on watching, or {code} to stop.
  */
 async function readyAgent(ctx, values) {
-  const { env, api, out, err, p, signal } = ctx;
+  const { env, api, out, err, p, signal, spawn, platform, style, stdin } = ctx;
   const pause = ctx.pause;
   let agent = readAgent(env, api);
   if (agent?.recovering) {
@@ -1039,20 +1065,48 @@ async function readyAgent(ctx, values) {
   }
   // With --no-wait the lines are the answer, on stdout; while waiting, stdout is kept for the events.
   const say = values["no-wait"] ? out : err;
+  const look = values["no-wait"] ? style.out : style.err;
+  // The two ways, a label each and the link on a line of its own, so it is easy to find and to click.
+  const label = (s) => `  ${look.label(s.padEnd(9))}`;
+  const under = " ".repeat(11);
+  const connectUrl = flow && (flow.verification_uri_complete ?? flow.verification_uri ?? `${DEFAULT_API}/link`);
   say("This agent isn't paid for or connected yet. Either way works:");
-  if (pay.body.url) say(`Pay for its own ${planName(plan)} plan (${billing}; Stripe asks the payer's email, for receipts): ${pay.body.url}`);
-  else say(`No payment link (${pay.status || "no answer"}): ${pay.body.error ?? "no details"}`);
+  say("");
+  if (pay.body.url) {
+    say(`${label("Pay")}for its own ${planName(plan)} plan, ${billing} (Stripe asks the payer's email, for receipts)`);
+    say(`${under}${look.link(pay.body.url)}`);
+  } else say(`${label("Pay")}no payment link (${pay.status || "no answer"}): ${pay.body.error ?? "no details"}`);
   if (flow) {
-    say(
-      `Or connect it to your account: open ${flow.verification_uri ?? `${DEFAULT_API}/link`} and enter ${flow.user_code}` +
-        `${flow.verification_uri_complete ? ` (or open ${flow.verification_uri_complete})` : ""}, signed in.`,
-    );
+    say("");
+    say(`${label("Connect")}it to your account, signed in: enter ${look.strong(flow.user_code)} at ${flow.verification_uri ?? `${DEFAULT_API}/link`}`);
+    say(`${under}${look.link(connectUrl)}`);
   }
+  say("");
   if (values["no-wait"]) {
     out(`Then run the same command again: it starts watching once the agent is paid for or connected.`);
     return { code: 0 };
   }
   err("Waiting for the payment or the approval, then watching (Ctrl+C stops; the agent key stays saved for next time).");
+  // A person at the terminal opens either page with Enter; agents have no terminal here, and read the links above.
+  let keys = null;
+  if (stdin && look.on && canOpen(env, platform)) {
+    const first = pay.body.url ? "the payment page" : "the connect page";
+    err(look.dim(`Press Enter to open ${first}${pay.body.url && flow ? ", or c and Enter to connect instead" : ""}.`));
+    keys = createInterface({ input: stdin, terminal: false });
+    keys.on("line", (line) => {
+      const url = (line.trim().toLowerCase() === "c" && connectUrl) || pay.body.url || connectUrl;
+      err(openBrowser(spawn, url, env, platform) ? "Opened it in your browser." : `Couldn't open a browser here: open ${url}`);
+    });
+  }
+  try {
+    return await waitReady(ctx, agent, me, ok);
+  } finally {
+    keys?.close();
+  }
+}
+
+/** Asks, gently and less often as time goes on, until the agent is paid for or connected; then says so. */
+async function waitReady({ env, api, err, p, pause, signal }, agent, me, ok) {
   const until = Date.now() + READY_WAIT_MS;
   let delay = READY_FIRST_MS;
   for (;;) {
@@ -1078,7 +1132,7 @@ async function readyAgent(ctx, values) {
   }
 }
 
-async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause }) {
+async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause, platform, style, stdin }) {
   const str = { type: "string" };
   const { values, positionals } = parseArgs({
     args: rest,
@@ -1117,7 +1171,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause 
   // The homepage's one command: with no key at all it signs the agent up, and until the agent is paid for or
   // connected it shows both ways and waits. An access key (--key, WS_KEY) or --no-signup skips this.
   if (auth?.kind !== "key" && !values["no-signup"]) {
-    const ready = await readyAgent({ api, fetch, env, out, err, signal, pause, p }, values);
+    const ready = await readyAgent({ api, fetch, env, out, err, signal, pause, p, spawn, platform, style, stdin }, values);
     if (ready.code !== undefined) return ready.code;
     auth = credentials(values, env, api);
   }
@@ -1314,7 +1368,10 @@ if (isMain()) {
   // Ctrl+C stops ws watch cleanly: what it was running finishes, and the place it got to is saved.
   const stop = new AbortController();
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => stop.abort());
-  run(process.argv.slice(2), { signal: stop.signal, name: commandName(process.env, process.argv[1], process.cwd()) }).then(
+  // Styled for a person only where the stream is a terminal; Enter opens a link only where stdin is one too.
+  const tty = { out: process.stdout.isTTY, err: process.stderr.isTTY };
+  const stdin = process.stdin.isTTY ? process.stdin : null;
+  run(process.argv.slice(2), { signal: stop.signal, name: commandName(process.env, process.argv[1], process.cwd()), tty, stdin }).then(
     (code) => {
       process.exitCode = code;
     },
