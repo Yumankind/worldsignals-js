@@ -3,6 +3,16 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## 0.4.4 (2026-10-27)
+
+- `watch`, for an agent not yet paid for or connected, lays out its two ways forward with a label each (Pay,
+  Connect) and each link on a line of its own.
+- At a terminal, the labels are in WorldSignals' orange, the connect code is bold, and links stay clickable as a
+  whole where they wrap (OSC 8). Press Enter to open the payment page, or `c` and Enter for the connect page.
+- Pipes, agents' shells, CI, `NO_COLOR` and `TERM=dumb` get plain text, with nothing to press: what agents read is
+  the same layout without styling.
+- `upgrade`, `billing`, `connect` and `recover` print their links clickable too, at a terminal.
+
 ## 0.4.3 (2026-10-26)
 
 No change to the command line tool: a new README for npm (banner, terminal demo, quick start, the MCP server as
