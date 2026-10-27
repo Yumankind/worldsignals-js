@@ -3,7 +3,7 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-10-27)
 
 - New: `request "<what>"` asks for data WorldSignals doesn't collect yet (`--countries`, `--use`, `--source` with an
   https:// link). The answer says how many have asked for the same and which collected event types come closest,
