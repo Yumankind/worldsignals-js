@@ -61,7 +61,7 @@ test("messages name the command as it was run", async () => {
   assert.match(io.lines.err[0], /npx worldsignals upgrade .*npx worldsignals connect/);
   assert.doesNotMatch(io.lines.err[0], /(^|[^x] )ws /);
   const text = help("npx worldsignals");
-  for (const c of ["signup", "upgrade", "connect", "status", "billing", "keys rotate", "recover", "events", "watch", "request", "feedback"]) assert.match(text, new RegExp(`^ {2}npx worldsignals ${c}`, "m"));
+  for (const c of ["signup", "upgrade", "connect", "status", "billing", "keys rotate", "recover", "stream preview", "events", "watch", "types", "fields", "estimate", "api", "request", "feedback"]) assert.match(text, new RegExp(`^ {2}npx worldsignals ${c}`, "m"));
   assert.doesNotMatch(text, /^ {2}ws /m);
   // The earlier names still work, but help shows only the new ones.
   assert.doesNotMatch(text, /worldsignals (init|pay|portal)\b|--link/);
@@ -119,7 +119,7 @@ test("stream shows the saved stream from /api/me, every country when none are ch
   assert.deepEqual(io.lines.out, ["Event types: company.registered", "Countries:   PT, XX", "Delivery:    cli", "Speed:       realtime"]);
   const all = capture();
   assert.equal(await run(["stream", "--json"], { ...fakeServer(200, { email: "a@b.co", eventTypes: ["company.registered"], countries: ["WW"] }), env: { WS_KEY: "wsk_1.a" }, ...all }), 0);
-  assert.deepEqual(JSON.parse(all.lines.out[0]), { eventTypes: ["company.registered"], countries: ["WW"], delivery: [], speed: null });
+  assert.deepEqual(JSON.parse(all.lines.out[0]), { eventTypes: ["company.registered"], countries: ["WW"], delivery: [], speed: null, matches: [] });
   const plain = capture();
   assert.equal(await run(["stream"], { ...fakeServer(200, { eventTypes: ["company.registered"], countries: ["WW"] }), env: { WS_KEY: "wsk_1.a" }, ...plain }), 0);
   assert.equal(plain.lines.out[1], "Countries:   every country");
@@ -923,4 +923,414 @@ test("feedback sends the kind (problem by default), the message and the CLI's ve
   const empty = capture();
   assert.equal(await run(["feedback", "--kind", "bug"], { fetch: none, env: agentEnv(), ...empty }), 2);
   assert.match(empty.lines.err[0], /^ws feedback needs a message/);
+});
+
+// Setting up a stream from the command line alone: matches with stream set, a preview, the event types and their
+// fields, an estimate, and any other API call with ws api.
+test("parseMatch reads <type>[@<codes>]:<condition>[;<condition>…], and says the form when it can't", async () => {
+  const { parseMatch, matchText } = await import("../bin/ws.mjs");
+  assert.deepEqual(parseMatch("procurement.tender_published:data.cpv^=72"), { type: "procurement.tender_published", where: ["data.cpv^=72"] });
+  assert.deepEqual(parseMatch(" company.registered@gb, ie : subject.name*=bakery|pastry; place.near=51.5,-0.12,20 "), {
+    type: "company.registered",
+    countries: ["GB", "IE"],
+    where: ["subject.name*=bakery|pastry", "place.near=51.5,-0.12,20"],
+  });
+  // Group names and all pass through as given, for the server to read.
+  assert.deepEqual(parseMatch("recall.issued@eu,XK:title*=toy").countries, ["EU", "XK"]);
+  // A colon in a condition stays in it.
+  assert.deepEqual(parseMatch("company.filing_published:data.filed_at>=2026-10-01T00:00").where, ["data.filed_at>=2026-10-01T00:00"]);
+  for (const bad of ["data.cpv^=72", "place.near=41.1,-8.6,10", ":x=1", "title*=a:b", "company.registered@:x=1", "a.b@PT@ES:x=1", "company registered:x=1"]) assert.match(parseMatch(bad), /^--match is <type>:<condition>/, bad);
+  assert.match(parseMatch("company.registered:"), /has no condition after the colon/);
+  assert.match(parseMatch("company.registered: ; "), /has no condition/);
+  assert.equal(matchText({ type: "a.b", where: ["x=1", "y*=z"] }), "a.b:x=1;y*=z");
+  assert.equal(matchText({ type: "a.b", countries: ["PT", "ES"], where: ["x=1"] }), "a.b@PT,ES:x=1");
+  assert.equal(matchText({ type: "a.b", countries: [], where: ["x=1"] }), "a.b@all:x=1");
+});
+
+test("matchesOption: --matches (JSON, @file or -) then each --match; none clears; nothing given is undefined", async () => {
+  const { matchesOption } = await import("../bin/ws.mjs");
+  const { writeFileSync } = await import("node:fs");
+  assert.equal(await matchesOption({}), undefined);
+  assert.deepEqual(await matchesOption({ match: ["none"] }), []);
+  assert.deepEqual(await matchesOption({ matches: "none" }), []);
+  assert.deepEqual(await matchesOption({ matches: "[]" }), []);
+  const one = { type: "vulnerability.published", where: ["data.cvss.base_score>=9"] };
+  assert.deepEqual(await matchesOption({ matches: JSON.stringify([one]), match: ["company.registered:subject.name*=bakery"] }), [one, { type: "company.registered", where: ["subject.name*=bakery"] }]);
+  const file = join(mkdtempSync(join(tmpdir(), "ws-matches-")), "m.json");
+  // What ws stream --json prints is read as its matches.
+  writeFileSync(file, JSON.stringify({ eventTypes: [], matches: [one] }));
+  assert.deepEqual(await matchesOption({ matches: `@${file}` }), [one]);
+  assert.deepEqual(await matchesOption({ matches: "-" }, async () => JSON.stringify([one])), [one]);
+  assert.match(await matchesOption({ matches: "{nope" }), /^--matches is a JSON list/);
+  assert.match(await matchesOption({ matches: '{"type": "x"}' }), /^--matches is a JSON list/);
+  assert.match(await matchesOption({ matches: "@/no/such/file.json" }), /^Couldn't read --matches @\/no\/such\/file\.json/);
+  assert.match(await matchesOption({ match: ["none", "a.b:x=1"] }), /give it alone/);
+  assert.match(await matchesOption({ match: ["oops"] }), /^--match is/);
+});
+
+test("stream set --match sends the matches in the same PATCH, and ws stream shows them as --match writes them", async () => {
+  const saved = { eventTypes: ["procurement.tender_published", "company.registered"], countries: ["PT"], delivery: [], speed: null, matches: [{ type: "procurement.tender_published", where: ["data.cpv^=72"] }, { type: "company.registered", countries: ["GB", "IE"], where: ["subject.name*=bakery|pastry", "title*=bread"] }] };
+  const server = answering(200, saved);
+  const io = capture();
+  const args = ["stream", "set", "--country", "pt", "--match", "procurement.tender_published:data.cpv^=72", "--match", "company.registered@GB,IE:subject.name*=bakery|pastry;title*=bread"];
+  assert.equal(await run(args, { fetch: server.fetch, env: { WS_API: "https://ws.test", WS_KEY: "wsk_1.a" }, ...io }), 0);
+  assert.equal(server.calls[0].url, "https://ws.test/api/me/stream");
+  assert.equal(server.calls[0].init.method, "PATCH");
+  assert.deepEqual(JSON.parse(server.calls[0].init.body), { countries: ["PT"], matches: saved.matches });
+  assert.deepEqual(io.lines.out, [
+    "Saved.",
+    "Event types: procurement.tender_published, company.registered",
+    "Countries:   PT",
+    "Matches:     procurement.tender_published:data.cpv^=72",
+    "             company.registered@GB,IE:subject.name*=bakery|pastry;title*=bread",
+  ]);
+  // --match none clears them; --matches reads a JSON list from stdin; --json carries them.
+  const cleared = answering(200, { ...saved, matches: [] });
+  assert.equal(await run(["stream", "set", "--match", "none"], { fetch: cleared.fetch, env: { WS_KEY: "k" }, ...capture() }), 0);
+  assert.deepEqual(JSON.parse(cleared.calls[0].init.body), { matches: [] });
+  const piped = capture();
+  assert.equal(await run(["stream", "set", "--matches", "-", "--json"], { fetch: server.fetch, env: { WS_KEY: "k" }, readStdin: async () => JSON.stringify(saved.matches), ...piped }), 0);
+  assert.deepEqual(JSON.parse(server.calls.at(-1).init.body), { matches: saved.matches });
+  assert.deepEqual(JSON.parse(piped.lines.out[0]).matches, saved.matches);
+  // A malformed --match is said before anything is sent.
+  const bad = capture();
+  assert.equal(await run(["stream", "set", "--match", "data.cpv^=72"], { fetch: () => assert.fail("no request"), env: { WS_KEY: "k" }, ...bad }), 2);
+  assert.match(bad.lines.err[0], /^--match is <type>:<condition>/);
+});
+
+test("stream set says the server's sentence when the plan's matches are used up (402 with limit), and a 400's", async () => {
+  const error = "The Developer plan includes 25 matches across the saved stream and webhooks, and this account uses 25. Upgrade for more at https://worldsignals.dev/pricing, or remove one.";
+  const io = capture();
+  const over = answering(402, { error, limit: { reached: true, kind: "matches", plan: "developer", used: 25, limit: 25, upgrade_url: "https://worldsignals.dev/pricing" } });
+  assert.equal(await run(["stream", "set", "--match", "vulnerability.published:data.cvss.base_score>=9"], { fetch: over.fetch, env: { WS_KEY: "k" }, ...io }), 1);
+  assert.deepEqual(io.lines.err, [`ws stream set: ${error}`]);
+  assert.deepEqual(io.lines.out, []);
+  // An agent with no plan still hears how to get one.
+  const unpaid = capture();
+  assert.equal(await run(["stream", "set", "--speed", "daily"], { ...answering(402, { error: "Payment required." }), env: { WS_KEY: "k" }, ...unpaid }), 1);
+  assert.match(unpaid.lines.err[0], /isn't paid for yet/);
+  const wrong = capture();
+  assert.equal(await run(["stream", "set", "--match", "nope.type:x=1"], { ...answering(400, { error: 'matches[0].type "nope.type" isn\'t an event type. See /api/catalogue.' }), env: { WS_KEY: "k" }, ...wrong }), 2);
+  assert.deepEqual(wrong.lines.err, ['ws stream set: matches[0].type "nope.type" isn\'t an event type. See /api/catalogue.']);
+});
+
+const PREVIEW = {
+  previews: [
+    {
+      match: { type: "procurement.tender_published", countries: ["PT"], where: ["data.cpv^=72"] },
+      matched: 37,
+      of: 2000,
+      since: "2026-10-21T08:00:00Z",
+      examples: [
+        { type: "procurement.tender_published", title: "Tender: IT services for the city of Porto", country: "PT", time: "2026-10-26T10:00:00Z" },
+        { type: "procurement.tender_published", title: "Tender: software licences", country: "PT", time: "2026-10-25T09:00:00Z" },
+      ],
+    },
+  ],
+};
+
+test("stream preview posts the matches given, or none for the saved ones, and prints each one's count and examples", async () => {
+  const { env, server } = await withAgent({ "POST /api/me/stream/preview": () => [200, PREVIEW] });
+  const io = capture();
+  assert.equal(await run(["stream", "preview", "--match", "procurement.tender_published@PT:data.cpv^=72", "--country", "pt,es"], { fetch: server.fetch, env, ...io }), 0);
+  assert.deepEqual(server.calls.map((c) => [c.method, c.path, c.agentId, c.signed]), [["POST", "/api/me/stream/preview", "agt_1", true]]);
+  assert.deepEqual(server.calls[0].body, { matches: [{ type: "procurement.tender_published", countries: ["PT"], where: ["data.cpv^=72"] }], countries: ["PT", "ES"] });
+  assert.deepEqual(io.lines.out, [
+    "procurement.tender_published@PT:data.cpv^=72",
+    "  37 of the latest 2,000 procurement.tender_published events, since 2026-10-21 08:00 UTC",
+    "    2026-10-26  PT  Tender: IT services for the city of Porto",
+    "    2026-10-25  PT  Tender: software licences",
+    "The examples count toward this month's events, as events read do.",
+  ]);
+  // No --match: an empty body, for the saved matches.
+  assert.equal(await run(["stream", "preview", "--json"], { fetch: server.fetch, env, ...capture() }), 0);
+  assert.deepEqual(server.calls[1].body, {});
+  const none = capture();
+  assert.equal(await run(["stream", "preview", "--match", "none"], { fetch: () => assert.fail("no request"), env, ...none }), 2);
+  assert.match(none.lines.err[0], /nothing to preview/);
+  const old = capture();
+  assert.equal(await run(["stream", "preview"], { ...answering(400, { error: "Send matches to preview." }), env: { WS_KEY: "k" }, ...old }), 2);
+  assert.match(old.lines.err[0], /^ws stream preview: Send matches to preview\. \(No saved matches\? Give some with --match/);
+});
+
+const CATALOGUE = {
+  families: [
+    {
+      id: "company",
+      label: "Companies",
+      types: [
+        { id: "company.registered", label: "New company registered", visibility: "public", connectors: [{ label: "UK", countries: ["GB"] }, { label: "ES", countries: ["ES"] }, { label: "More", countries: ["FR", "NO", "FI", "CH", "IE", "LV"] }] },
+        { id: "company.officer_appointed", label: "Company officer appointed", visibility: "public", connectors: [] },
+      ],
+    },
+    {
+      id: "tech",
+      label: "Tech",
+      types: [
+        { id: "vulnerability.published", label: "Vulnerability published", visibility: "public", connectors: [{ label: "NVD", countries: ["GB", "ES", "FR", "NO", "FI", "CH", "IE", "LV", "PT", "SE"] }] },
+        { id: "domain.dropped", label: "Domain dropped", visibility: "public", connectors: [{ label: "SE", countries: ["SE"] }, { label: "gTLD", countries: ["XX"] }] },
+      ],
+    },
+  ],
+  countries: ["GB", "ES", "FR", "NO", "FI", "CH", "IE", "LV", "PT", "SE"],
+  worldwide: "WW",
+  alwaysFree: ["vulnerability.published"],
+};
+
+test("types lists the event types by family with where each is collected, needing no key", async () => {
+  const server = answering(200, CATALOGUE);
+  const io = capture();
+  assert.equal(await run(["types"], { fetch: server.fetch, env: { WS_API: "https://ws.test", XDG_CONFIG_HOME: CONFIG }, ...io }), 0);
+  assert.equal(server.calls[0].url, "https://ws.test/api/catalogue");
+  assert.equal(server.calls[0].init.headers.authorization, undefined);
+  assert.equal(server.calls[0].init.headers["x-ws-signature"], undefined);
+  assert.deepEqual(io.lines.out, [
+    "Companies (company)",
+    "  company.registered         New company registered     GB, ES, FR, NO, FI, CH +2 more",
+    "  company.officer_appointed  Company officer appointed  planned",
+    "Tech (tech)",
+    "  vulnerability.published    Vulnerability published    any country, or worldwide (XX); always free",
+    "  domain.dropped             Domain dropped             SE, worldwide (XX)",
+    "Collected: 3 of 4 types. ws fields <type> lists the fields a condition can test.",
+  ]);
+  const json = capture();
+  assert.equal(await run(["types", "--family", "tech", "--json"], { fetch: server.fetch, env: {}, ...json }), 0);
+  assert.deepEqual(json.lines.out.map((l) => JSON.parse(l)), [
+    { type: "vulnerability.published", label: "Vulnerability published", family: "tech", visibility: "public", collected: true, countries: [], every_country: true, worldwide: true, always_free: true },
+    { type: "domain.dropped", label: "Domain dropped", family: "tech", visibility: "public", collected: true, countries: ["SE"], every_country: false, worldwide: true, always_free: false },
+  ]);
+  const wrong = capture();
+  assert.equal(await run(["types", "--family", "tech,space"], { fetch: server.fetch, env: {}, ...wrong }), 2);
+  assert.deepEqual(wrong.lines.err, ["No family space. The families: company, tech."]);
+});
+
+const FIELDS = {
+  type: "procurement.tender_published",
+  fields: [
+    { path: "data.tender.main_procurement_category", label: "Tender › Main procurement category", kind: "enum", values: ["goods", "services", "works"] },
+    { path: "data.tender.value.eur", label: "Tender › Value › in EUR at today's rate", kind: "number" },
+    { path: "data.cpv", label: "CPV", kind: "text", list: true },
+  ],
+};
+
+test("fields lists a type's fields for conditions: path, kind and an enum's values; an unknown type is said", async () => {
+  const server = answering(200, FIELDS);
+  const io = capture();
+  assert.equal(await run(["fields", "procurement.tender_published"], { fetch: server.fetch, env: { WS_API: "https://ws.test" }, ...io }), 0);
+  assert.equal(server.calls[0].url, "https://ws.test/api/fields?type=procurement.tender_published");
+  assert.equal(server.calls[0].init.headers.authorization, undefined);
+  assert.deepEqual(io.lines.out, [
+    "procurement.tender_published: 3 fields, for --where and --match conditions.",
+    "  data.tender.main_procurement_category  enum         Tender › Main procurement category: goods|services|works",
+    "  data.tender.value.eur                  number       Tender › Value › in EUR at today's rate",
+    "  data.cpv                               text (list)  CPV",
+    "Operators: = != > >= < <=, text *= !*= ^= $= ~= !~=, | between values. E.g. --where 'data.tender.main_procurement_category=goods'",
+    "  or ws stream set --match 'procurement.tender_published:data.tender.main_procurement_category=goods'",
+  ]);
+  const json = capture();
+  assert.equal(await run(["fields", "procurement.tender_published", "--json"], { fetch: server.fetch, env: {}, ...json }), 0);
+  assert.deepEqual(JSON.parse(json.lines.out[0]), FIELDS);
+  const unknown = capture();
+  assert.equal(await run(["fields", "nope.type"], { ...answering(404, { error: "No such event type with a schema. See /api/catalogue." }), env: {}, ...unknown }), 2);
+  assert.deepEqual(unknown.lines.err, ["ws fields: No such event type with a schema. See /api/catalogue. (ws types lists them.)"]);
+  assert.equal(await run(["fields"], { fetch: () => assert.fail("no request"), env: {}, ...capture() }), 2);
+});
+
+const ESTIMATE = {
+  since: "2026-10-20T12:00:00.000Z",
+  count: 1234,
+  capped: false,
+  exact: true,
+  always_free: 234,
+  counts_toward_usage: 1000,
+  locked: 0,
+  allowance: { used: 1500, limit: 50000, left: 48500 },
+  plan: "developer",
+  window_days: 7,
+  earliest: "2026-10-20T12:00:00.000Z",
+  allowed: true,
+};
+
+test("estimate asks with the filters and since, signed, and prints the count, what counts, the allowance left", async () => {
+  const { sinceTime } = await import("../bin/ws.mjs");
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  assert.equal(sinceTime("7d", now), "2026-10-20T12:00:00.000Z");
+  assert.equal(sinceTime("24h", now), "2026-10-26T12:00:00.000Z");
+  assert.equal(sinceTime("30m", now), "2026-10-27T11:30:00.000Z");
+  assert.equal(sinceTime("2026-10-01", now), "2026-10-01T00:00:00.000Z");
+  assert.equal(sinceTime("last week", now), null);
+
+  const { env, server } = await withAgent({ "GET /api/events/estimate": () => [200, { ...ESTIMATE, since: new Date(Date.now() - 7 * 86_400_000).toISOString() }] });
+  const io = capture();
+  const args = ["estimate", "--type", "company.registered", "--country", "pt,eu", "--since", "7d", "--where", "subject.name*=bakery", "--match", "procurement.tender_published:data.cpv^=72"];
+  assert.equal(await run(args, { fetch: server.fetch, env, ...io }), 0);
+  const call = server.calls[0];
+  assert.deepEqual([call.method, call.path, call.agentId, call.signed], ["GET", "/api/events/estimate", "agt_1", true]);
+  const q = new URL(call.url).searchParams;
+  assert.ok(Math.abs(Date.parse(q.get("since")) - (Date.now() - 7 * 86_400_000)) < 60_000);
+  assert.equal(q.get("types"), "company.registered,procurement.tender_published");
+  assert.equal(q.get("country"), "PT,EU", "groups pass through");
+  assert.equal(q.get("where"), "subject.name*=bakery");
+  assert.deepEqual(JSON.parse(q.get("matches")), [{ type: "procurement.tender_published", where: ["data.cpv^=72"] }]);
+  assert.match(io.lines.out[0], /^1,234 events since \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\.$/);
+  assert.deepEqual(io.lines.out.slice(1), [
+    "  1,000 count toward this month's events",
+    "  234 always free (vulnerabilities and WorldSignals' notices)",
+    "This month: 1,500 of 50,000 events used, 48,500 left (Developer plan).",
+    "At this pace: about 5,289 a month, 4,286 of them counting toward usage.",
+    "Estimating uses none of the monthly events.",
+  ]);
+  // --json is the answer as is; the free plan says what would arrive locked, and what it can't read back.
+  const json = capture();
+  assert.equal(await run(["estimate", "--json"], { ...answering(200, ESTIMATE), env: { WS_KEY: "k" }, ...json }), 0);
+  assert.deepEqual(JSON.parse(json.lines.out[0]), ESTIMATE);
+  const free = capture();
+  const freeAnswer = { ...ESTIMATE, exact: false, plan: "free", locked: 200, allowance: { used: 1700, limit: 2500, left: 800 }, allowed: false, error: "The free plan reads the last 24 hours." };
+  assert.equal(await run(["estimate", "--where", "title*=x"], { ...answering(200, freeAnswer), env: { WS_KEY: "k" }, ...free }), 0);
+  assert.match(free.lines.out[0], /^Up to 1,234 events since/);
+  assert.ok(free.lines.out.includes("  200 would arrive locked, past the free plan's events this month"));
+  assert.ok(free.lines.out.includes("This month: 1,700 of 2,500 events used, 800 left (Free plan)."));
+  assert.deepEqual(free.lines.err, ["Note: The free plan reads the last 24 hours."]);
+  const unlimited = capture();
+  assert.equal(await run(["estimate"], { ...answering(200, { ...ESTIMATE, plan: "business", allowance: { used: 9, limit: null, left: null } }), env: { WS_KEY: "k" }, ...unlimited }), 0);
+  assert.ok(unlimited.lines.out.includes("This month: 9 events used; the Business plan has no monthly limit."));
+  // Checked before anything is sent: --since, a malformed match, and a key.
+  const none = () => assert.fail("no request");
+  assert.equal(await run(["estimate", "--since", "yesterday"], { fetch: none, env: { WS_KEY: "k" }, ...capture() }), 2);
+  assert.equal(await run(["estimate", "--match", "x"], { fetch: none, env: { WS_KEY: "k" }, ...capture() }), 2);
+  const nokey = capture();
+  assert.equal(await run(["estimate"], { fetch: none, env: { XDG_CONFIG_HOME: CONFIG }, ...nokey }), 2);
+  assert.match(nokey.lines.err[0], /^ws estimate needs an agent key/);
+});
+
+test("api sends any call under /api/, signed with the agent key, and prints the answer's JSON", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const { env, server } = await withAgent({
+    "GET /api/me": () => [200, { eventTypes: ["company.registered"] }],
+    "PATCH /api/me/stream": ({ body }) => [200, { ...body, saved: true }],
+    "POST /api/me/stream/preview": () => [402, { error: "This agent isn't paid for yet." }],
+  });
+  const io = capture();
+  assert.equal(await run(["api", "get", "/api/me"], { fetch: server.fetch, env, ...io }), 0);
+  assert.deepEqual(io.lines.out, ['{\n  "eventTypes": [\n    "company.registered"\n  ]\n}']);
+  // The body as text, from a file, or from stdin; --raw prints one line.
+  const file = join(mkdtempSync(join(tmpdir(), "ws-body-")), "b.json");
+  writeFileSync(file, '{ "speed": "hourly" }\n');
+  const raw = capture();
+  assert.equal(await run(["api", "PATCH", "/api/me/stream", '{"speed": "daily"}', "--raw"], { fetch: server.fetch, env, ...raw }), 0);
+  assert.equal(await run(["api", "PATCH", "api/me/stream", `@${file}`, "--raw"], { fetch: server.fetch, env, ...raw }), 0);
+  assert.equal(await run(["api", "PATCH", "https://ws.test/api/me/stream", "-", "--raw"], { fetch: server.fetch, env, readStdin: async () => '{"speed":"realtime"}', ...raw }), 0);
+  assert.deepEqual(raw.lines.out, ['{"speed":"daily","saved":true}', '{"speed":"hourly","saved":true}', '{"speed":"realtime","saved":true}']);
+  assert.deepEqual(server.calls.map((c) => [c.method, c.path, c.agentId, c.signed, c.headers["content-type"]]), [
+    ["GET", "/api/me", "agt_1", true, undefined],
+    ["PATCH", "/api/me/stream", "agt_1", true, "application/json"],
+    ["PATCH", "/api/me/stream", "agt_1", true, "application/json"],
+    ["PATCH", "/api/me/stream", "agt_1", true, "application/json"],
+  ]);
+  // An answer of 400 or more: its JSON on stdout, the status and the error on stderr, exit 1.
+  const refusedIo = capture();
+  assert.equal(await run(["api", "POST", "/api/me/stream/preview", "{}"], { fetch: server.fetch, env, ...refusedIo }), 1);
+  assert.deepEqual(JSON.parse(refusedIo.lines.out[0]), { error: "This agent isn't paid for yet." });
+  assert.deepEqual(refusedIo.lines.err, ["ws api: POST /api/me/stream/preview answered 402: This agent isn't paid for yet."]);
+  const busy = capture();
+  assert.equal(await run(["api", "GET", "/api/events?limit=1"], { ...answering(429, { error: "Too many requests." }, { "retry-after": "20" }), env: { WS_KEY: "wsk_1.a" }, ...busy }), 1);
+  assert.deepEqual(busy.lines.err, ["ws api: GET /api/events answered 429: Too many requests. Try again in 20 seconds."]);
+  // An access key goes as a bearer token, the query kept.
+  const keyed = answering(200, { events: [] });
+  assert.equal(await run(["api", "GET", "/api/events?types=company.registered&limit=5", "--key", "wsk_2.b"], { fetch: keyed.fetch, env: { WS_API: "https://ws.test" }, ...capture() }), 0);
+  assert.equal(keyed.calls[0].url, "https://ws.test/api/events?types=company.registered&limit=5");
+  assert.equal(keyed.calls[0].init.headers.authorization, "Bearer wsk_2.b");
+});
+
+test("api refuses other hosts, paths outside /api/, a body on GET, and a body that isn't JSON, before sending", async () => {
+  const { apiTarget } = await import("../bin/ws.mjs");
+  assert.equal(apiTarget("https://ws.test", "/api/me"), "https://ws.test/api/me");
+  assert.equal(apiTarget("https://ws.test", "https://ws.test/api/x?y=1"), "https://ws.test/api/x?y=1");
+  const none = () => assert.fail("no request");
+  const env = { WS_API: "https://ws.test", WS_KEY: "k" };
+  const cases = [
+    [["api", "GET", "https://evil.example/api/me"], /^ws api only sends to ws\.test: give a path such as \/api\/me, not a link to evil\.example\.$/],
+    [["api", "GET", "//evil.example/api/me"], /not a link to evil\.example/],
+    [["api", "GET", "http://ws.test/api/me"], /only sends to ws\.test/],
+    [["api", "POST", "/mcp", "{}"], /under \/api\/ only.*the MCP server at \/mcp has its own clients/],
+    [["api", "GET", "/api/../mcp"], /under \/api\/ only/],
+    [["api", "GET", "/signin"], /under \/api\/ only/],
+    [["api", "GET", "/api/me", "{}"], /^ws api GET sends no body/],
+    [["api", "POST", "/api/feedback", "{nope"], /^The body is JSON/],
+    [["api", "POST", "/api/feedback", "@/no/such.json"], /^Couldn't read @\/no\/such\.json/],
+    [["api", "FETCH", "/api/me"], /^ws api is ws api <METHOD> <path>/],
+    [["api", "GET"], /^ws api is ws api <METHOD> <path>/],
+  ];
+  for (const [args, message] of cases) {
+    const io = capture();
+    assert.equal(await run(args, { fetch: none, env, ...io }), 2, args.join(" "));
+    assert.match(io.lines.err[0], message, args.join(" "));
+  }
+  // With no key at all, it still sends (public routes need none) and says how to get one on a 401.
+  const io = capture();
+  assert.equal(await run(["api", "GET", "/api/me"], { ...answering(401, { error: "Not signed in." }), env: { WS_API: "https://ws.test", XDG_CONFIG_HOME: CONFIG }, ...io }), 1);
+  assert.equal(io.lines.err[0], "ws api: GET /api/me answered 401: Not signed in.");
+  assert.match(io.lines.err[1], /^ws api needs an agent key/);
+});
+
+/** A fake events API: answers newest-first pages from `pages` in turn, recording each before and limit asked. */
+function pagingServer(pages) {
+  const asked = [];
+  const fetch = async (url) => {
+    const q = new URL(url).searchParams;
+    asked.push({ before: q.get("before"), limit: q.get("limit") });
+    const page = pages[Math.min(asked.length - 1, pages.length - 1)];
+    return new Response(JSON.stringify({ cursor: 900, ...page }), { status: 200 });
+  };
+  return { fetch, asked };
+}
+const ev = (title) => ({ time: "2026-10-20T00:00:00Z", type: "company.registered", country: "GB", title });
+
+test("events pages back while the answer says older events may match, and says how far it looked", async () => {
+  // Two empty windows, then a match, then nothing older.
+  const server = pagingServer([
+    { events: [], before: 800, older: true },
+    { events: [], before: 700, older: true },
+    { events: [ev("Bakery Ltd")], before: 600, older: true },
+    { events: [ev("Pastry Ltd")], before: null, older: false },
+  ]);
+  const io = capture();
+  assert.equal(await run(["events", "--where", "subject.name*=bakery|pastry", "--limit", "5"], { fetch: server.fetch, env: { WS_KEY: "k" }, ...io }), 0);
+  assert.deepEqual(server.asked, [
+    { before: null, limit: "5" },
+    { before: "800", limit: "5" },
+    { before: "700", limit: "5" },
+    { before: "600", limit: "4" },
+  ]);
+  assert.deepEqual(io.lines.out, ["2026-10-20  company.registered              GB  Bakery Ltd", "2026-10-20  company.registered              GB  Pastry Ltd", "Next: ws events --after 900"]);
+  // Nothing anywhere: said only once the server has nothing older.
+  const empty = capture();
+  const nothing = pagingServer([{ events: [], before: 800, older: true }, { events: [], before: null, older: false }]);
+  assert.equal(await run(["events", "--where", "title*=zzz"], { fetch: nothing.fetch, env: { WS_KEY: "k" }, ...empty }), 0);
+  assert.equal(empty.lines.out[0], "No events match: searched back to the oldest events kept (the last 30 days).");
+  // At --pages, it stops and says where to carry on.
+  const capped = capture();
+  const endless = pagingServer([{ events: [], before: 500, older: true }]);
+  assert.equal(await run(["events", "--where", "title*=zzz", "--pages", "3"], { fetch: endless.fetch, env: { WS_KEY: "k" }, ...capped }), 0);
+  assert.equal(endless.asked.length, 3);
+  assert.deepEqual(capped.lines.out.slice(0, 2), [
+    "No events match in the 3 windows of the newest events searched (about 15,000 events back).",
+    "Older ones may: add --before 500 to look further back, or --pages <n> (up to 100) to read more at once.",
+  ]);
+  const json = capture();
+  assert.equal(await run(["events", "--where", "title*=zzz", "--pages", "2", "--json", "--before", "1000"], { fetch: endless.fetch, env: { WS_KEY: "k" }, ...json }), 0);
+  assert.equal(endless.asked[3].before, "1000");
+  assert.deepEqual(json.lines.out, []);
+  assert.deepEqual(json.lines.err, ["Note: older events may match too: add --before 500 to look further back."]);
+  // A later page refused: what was found is still printed. Polling (--after <number>) reads one answer.
+  const halfway = capture();
+  let n = 0;
+  const flaky = async () => (++n === 1 ? new Response(JSON.stringify({ events: [ev("A")], before: 800, older: true }), { status: 200 }) : new Response(JSON.stringify({ error: "Too many requests." }), { status: 429 }));
+  assert.equal(await run(["events", "--where", "title*=a", "--limit", "2"], { fetch: flaky, env: { WS_KEY: "k" }, ...halfway }), 0);
+  assert.equal(halfway.lines.out[0], "2026-10-20  company.registered              GB  A");
+  assert.deepEqual(halfway.lines.err, ["Note: stopped looking further back (429: Too many requests.)."]);
+  const poll = pagingServer([{ events: [], older: false, cursor: 950 }]);
+  assert.equal(await run(["events", "--after", "900", "--where", "title*=a"], { fetch: poll.fetch, env: { WS_KEY: "k" }, ...capture() }), 0);
+  assert.equal(poll.asked.length, 1);
+  assert.equal(await run(["events", "--pages", "0"], { fetch: () => assert.fail("no request"), env: { WS_KEY: "k" }, ...capture() }), 2);
 });

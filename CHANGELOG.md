@@ -9,6 +9,24 @@ Versions of the `worldsignals` package on npm. Not every tagged or committed ver
   https:// link). The answer says how many have asked for the same and which collected event types come closest,
   where they're collected and where not yet.
 - New: `feedback "<message>"` sends a bug, a problem (the default) or an idea (`--kind`), with the CLI's version.
+- New: `stream set --match '<type>[@<codes>]:<condition>[;<condition>…]'` saves matches with the stream, one per
+  `--match` (e.g. `--match 'procurement.tender_published:data.cpv^=72'`); `--matches` takes the JSON list (text,
+  `@file` or `-`), and `--match none` removes them. They replace the saved matches. Past the plan's matches, the
+  server's sentence is printed, exit 1. `stream` and `stream --json` show the saved matches.
+- New: `stream preview [--match …]` shows what each match would have sent among the latest events of its type,
+  with up to three examples; with no `--match`, the saved matches.
+- New: `types [--family …]` lists the event types and where each is collected (country codes, worldwide (XX), or
+  planned); `fields <type>` lists a type's fields for conditions (path, kind, an enum's values). Both need no key.
+- New: `estimate [--type] [--country] [--since 7d] [--where …] [--match …]` says how many events filters find
+  since a time, how many count toward the month, how many are always free or would arrive locked, and the
+  allowance left. It uses none of the monthly events.
+- New: `api <METHOD> <path> [<body>]` sends any call under `/api/`, signed with the agent key or sent with the
+  access key; the body is JSON text, `@file` or `-`. It prints the answer's JSON (`--raw`: one line); 400 and up
+  also go to stderr with the status, exit 1. Links to other hosts, and `/mcp`, are refused.
+- `events` with conditions pages back (`before`) while the server says older events may match, up to `--limit`
+  events or `--pages` answers (default 30), instead of stopping at the first empty window; it says how far back it
+  looked and how to carry on (`--before <number>`).
+- `--country` help mentions the groups `EU`, `EEA` and `EUROPE`, passed on as given.
 - Both work with no account: with `--key` or `WS_KEY` they come from that key's account, else signed with the agent
   key if the machine has one, else anonymously. `--json` prints the answer as one object. A refused request (400)
   or one too many (429, with when to try again) is said on stderr, with exit 1.

@@ -150,13 +150,68 @@ command.
 | `billing` | Stripe's billing portal for an agent that pays for its own plan: change plan or card, invoices, cancel |
 | `keys rotate` | A new key for this agent; the old one stops working |
 | `recover` | A new key for an agent whose key was lost, approved by the person who pays for it or connected it |
-| `stream`, `stream set` | Show or change the saved stream: the types and countries `watch` uses by default |
-| `events` | Read stored events (`--type`, `--country`, `--after`, `--limit 1-200`, `--json`) |
+| `stream`, `stream set` | Show or change the saved stream: the types, countries and matches `watch` uses by default (`--match`, `--matches`) |
+| `stream preview` | What matches would have sent among the latest events, with examples, before saving them |
+| `types` | The event types, by family, and where each is collected (`--family`, `--json`) |
+| `fields` | The fields of one event type, for conditions: path, kind, an enum's values (`--json`) |
+| `estimate` | How many events filters find since a time, what counts toward the month, what's left (`--since`, `--json`) |
+| `events` | Read stored events (`--type`, `--country`, `--after`, `--before`, `--limit 1-200`, `--pages`, `--json`) |
 | `watch` | Stay connected and handle each new event as it arrives |
 | `request` | Ask for data that isn't collected yet (`--countries`, `--use`, `--source`, `--json`) |
 | `feedback` | Tell us about a bug, a problem or an idea (`--kind bug\|problem\|idea`, `--json`) |
+| `api` | Any call to the WorldSignals API under `/api/`, signed as the other commands sign (`--raw`) |
 
 `npx worldsignals help` has every option. `WS_API` points the tool at another server, for testing.
+
+## Set up a stream
+
+Everything a stream needs, from the command line: which types exist and where, the fields a condition can test, how
+many events it would be, then save it.
+
+```sh
+npx worldsignals types --family public
+npx worldsignals fields procurement.tender_published
+npx worldsignals estimate --type procurement.tender_published --country PT,ES --where 'data.cpv^=72' --since 7d
+npx worldsignals stream preview --match 'procurement.tender_published@PT,ES:data.cpv^=72'
+npx worldsignals stream set --country PT,ES --match 'procurement.tender_published:data.cpv^=72'
+```
+
+`types` says where each type is collected: a few country codes, `worldwide (XX)` for events about the whole world,
+`planned` when nothing collects it yet. `--country` takes ISO codes, `XX`, and `EU`, `EEA` or `EUROPE` for a group.
+
+A match is one event type and conditions that must all hold, written as for `--where`:
+`--match '<type>:<condition>[;<condition>…]'`. `@PT,ES` after the type gives the match its own countries (else the
+stream's). Repeat `--match` for more (any one is enough); the matches given replace the saved ones, and
+`--match none` removes them. `--matches` takes the JSON list instead (text, `@file` or `-` for stdin):
+`[{"type": "…", "countries": ["PT"], "where": ["data.cpv^=72"]}]`. A match's type joins the stream; types without a
+match still send all their events. Past the plan's matches, `stream set` prints the server's sentence and exits 1.
+
+`estimate` counts without reading: it uses none of the monthly events.
+
+```
+1,234 events since 2026-10-20 12:00 UTC.
+  1,000 count toward this month's events
+  234 always free (vulnerabilities and WorldSignals' notices)
+This month: 1,500 of 50,000 events used, 48,500 left (Developer plan).
+At this pace: about 5,289 a month, 4,286 of them counting toward usage.
+Estimating uses none of the monthly events.
+```
+
+With text conditions or matches, the count is an upper bound ("Up to …"): those are checked on each event after
+counting. `stream preview` checks them on the latest events of each type (up to 2,000) and shows up to three; its
+examples count as events read.
+
+For anything else, `api` sends one request, signed with the agent key (or the access key), and prints the answer's
+JSON:
+
+```sh
+npx worldsignals api GET /api/me
+npx worldsignals api PATCH /api/me/stream '{"speed": "daily"}'
+npx worldsignals api POST /api/me/stream/preview @matches.json
+```
+
+The body is JSON text, `@file` or `-` for stdin. Only paths under `/api/` on the WorldSignals server; links to other
+hosts are refused. An answer of 400 or more is printed too, with its status and error on stderr and exit 1.
 
 ## Read events
 
@@ -168,6 +223,10 @@ npx worldsignals events --type company.registered --country ES --json
 `--json` prints one standard event per line. To poll, pass `--after <number>`: every stored event has a number, and
 you get the ones stored after it, oldest first. Without `--json` the last line says the number to ask from next
 time. `--after <time>` shows the newest events first seen since then.
+
+With conditions (`--where` and the filters below), each answer searches one window of recent events, so `events`
+reads back window after window until it has `--limit` events or there are none older, up to `--pages` answers
+(default 30). It says how far back it looked, and `--before <number>` carries on from there.
 
 ## Filters
 

@@ -6,11 +6,13 @@
 //   node ws.mjs upgrade [--plan developer|team|business] [--yearly] [--wait]   (a Stripe payment link for the agent)
 //   node ws.mjs connect [--email …]   (or: a code its person approves at worldsignals.dev/link, signed in)
 //   node ws.mjs status | billing | keys rotate | recover
-//   node ws.mjs stream [set --type … --country …]   (shows or changes the saved stream)
+//   node ws.mjs stream [set --type … --country … --match "<type>:<condition>;…"]   (shows or changes the saved stream)
+//   node ws.mjs types | fields <type> | estimate [--type …] [--since 7d]   (what to ask for, and how many events it is)
 //   node ws.mjs events [--type …] [--country ES,FR] [--after <number|time>] [--limit 50] [--json]
 //   node ws.mjs watch [--type …] [--country …] [--exec <program> | --agent claude|codex] [--out <folder>] [--batch]
 //   node ws.mjs request "<what>" [--countries PT,ES] [--use …] [--source <https url>]   (data you'd like collected)
 //   node ws.mjs feedback "<message>" [--kind bug|problem|idea]
+//   node ws.mjs api <METHOD> /api/<path> [<json>|@file|-]   (any API call, signed as the commands above sign)
 //
 // WS_API overrides the server (default https://worldsignals.dev). Requests are signed with the agent key that
 // signup made; WS_KEY (or --key) sends a named or personal access key from the console instead.
@@ -83,18 +85,42 @@ Events (signed with the agent key; or send a named or personal access key with -
   ${p} stream [--json] [--key <key>]
       Show the saved stream: the event types and countries ${p} watch and the live stream use when given
       no --type or --country.
-  ${p} stream set [--type <ids>] [--country <codes>] [--delivery <ids>] [--speed <speed>] [--key <key>]
+  ${p} stream set [--type <ids>] [--country <codes>] [--match <match>]… [--matches <json|@file|->]
+                 [--delivery <ids>] [--speed <speed>] [--key <key>]
       Change it, at once. What you leave out stays as it is. --country all is every country; add XX
-      for the events about the whole world: PT,ES,XX. --speed is realtime, hourly or daily.
-      Unknown types or countries are refused, naming them.
+      for the events about the whole world: PT,ES,XX; EU, EEA or EUROPE for a group. --speed is realtime,
+      hourly or daily. Unknown types or countries are refused, naming them.
+      --match <type>:<condition>[;<condition>…]
+                         only the events of that type where every condition holds (written as for --where,
+                         below); repeat --match for more, and any one of them is enough. A match's type joins
+                         the stream's types; types without a match still send all their events.
+                           --match 'procurement.tender_published:data.cpv^=72'
+                           --match 'company.registered@GB,IE:subject.name*=bakery|pastry;place.near=51.5,-0.12,20'
+                         @<codes> after the type gives the match its own countries (else the stream's).
+                         The matches given replace the saved ones, so list them all; --match none removes them.
+                         Each plan includes a number of matches: past it, the change is refused, saying so.
+      --matches <json|@file|->  the matches as a JSON list, from the text, a file or stdin:
+                         [{"type": "…", "countries": ["PT"], "where": ["data.cpv^=72"]}]
 
-  ${p} events [--type <ids>] [--country <codes>] [--after <number|time>] [--limit <1-200>] [--json] [--key <key>]
-      Print collected public events.
+  ${p} stream preview [--match <match>]… [--matches <json|@file|->] [--country <codes>] [--json] [--key <key>]
+      What each match would have sent among the latest events of its type (up to 2,000), with up to three of
+      them, before saving it. With no --match, the matches saved with the stream. --country stands for the
+      stream's countries, for matches without their own. The examples count toward this month's events.
+      --json             the answer as one JSON object: {previews: [{match, matched, of, since, examples}]}
+
+  ${p} events [--type <ids>] [--country <codes>] [--after <number|time>] [--before <number>] [--limit <1-200>]
+              [--pages <n>] [--json] [--key <key>]
+      Print collected public events, newest first.
       --country <codes> one ISO code or several, comma-separated, e.g. FR,ES; add XX for the events
-                        about the whole world (vulnerabilities, outages, AI models): FR,ES,XX
+                        about the whole world (vulnerabilities, outages, AI models): FR,ES,XX;
+                        EU, EEA or EUROPE for a group
       --after <number>  the events stored after that event number, oldest first: poll with it.
                         Without --json the last line says the number to ask from next time.
       --after <time>    the newest events first seen after that time.
+      --before <number> the events stored before that event number: to look further back, as the last line says.
+      --pages <n>       with conditions (--where and the filters below), each answer searches one window of recent
+                        events, so the tool reads back answer after answer until --limit events are found or none
+                        older are left: at most this many answers (default 30, up to 100).
       Filters (also for ${p} watch):
       --platform <list>   operating systems: windows, macos, linux, android, ios, chromeos, freebsd
       --ecosystem <list>  package registries: npm, pypi, maven, nuget, go, rubygems, crates,
@@ -122,7 +148,8 @@ Events (signed with the agent key; or send a named or personal access key with -
                          is a line of its own on stderr, as stdout is the events' alone
       --no-signup        never sign up: without a key, say how to get one and exit
       --type <ids>       event types (default: the saved stream's)
-      --country <codes>  ISO codes; XX is the events about the whole world (default: the saved stream's)
+      --country <codes>  ISO codes; XX is the events about the whole world; EU, EEA or EUROPE for a group
+                         (default: the saved stream's)
       --platform, --ecosystem, --language, --tag, --where   the filters above
       With no action it prints one standard event per line (JSON). Actions:
       --exec <program>   run it for each event, with the event as JSON on stdin; never through a shell
@@ -136,6 +163,40 @@ Events (signed with the agent key; or send a named or personal access key with -
       --state <file>     where to remember the last event handled (default ~/.config/worldsignals/watch.json);
                          give each watcher its own
       --once             handle what is waiting, then exit: for cron and scheduled jobs
+
+Plan a stream (types and fields need no key):
+  ${p} types [--family <ids>] [--json]
+      The event types, by family, and where each is collected: country codes, worldwide (XX) for the events
+      about the whole world, planned when nothing collects it yet.
+      --family <ids>     only these families, e.g. company,public
+      --json             one type per line: {type, label, family, visibility, collected, countries, every_country,
+                         worldwide, always_free}; countries is empty when its sources read about any country
+
+  ${p} fields <type> [--json]
+      The fields of one event type, for --where and --match: each one's path, its kind (text, number, enum,
+      bool, near, within; "list" when any item of a list may match) and an enum's values.
+      --json             the answer as one JSON object: {type, fields: [{path, label, kind, values, list}]}
+
+  ${p} estimate [--type <ids>] [--country <codes>] [--since <time>] [--where <condition>]… [--match <match>]…
+                [--json] [--key <key>]
+      How many events those filters found since a time (default: the last 7 days): how many count toward this
+      month's events, how many are always free (vulnerabilities, WorldSignals' notices) or would arrive locked,
+      and how many of the month's events are left. Estimating uses none of the monthly events.
+      --since <time>     an ISO time (2026-10-01, 2026-10-20T08:00:00Z) or a span back from now: 24h, 7d, 30d
+      --platform, --ecosystem, --language, --tag, --where   the filters of ${p} events
+      --match, --matches the matches of ${p} stream set, tried without saving them
+      --json             the answer as one JSON object: {since, count, exact, capped, always_free,
+                         counts_toward_usage, locked, allowance: {used, limit, left}, plan, window_days, allowed}
+
+Any API call:
+  ${p} api <METHOD> <path> [<body>] [--raw] [--key <key>]
+      Send one request to the WorldSignals API, signed with the agent key (or with --key or WS_KEY, the access
+      key), and print the answer's JSON, indented (--raw: as one line). Paths are under /api/:
+        ${p} api GET /api/me
+        ${p} api PATCH /api/me/stream '{"speed": "daily"}'
+        ${p} api POST /api/me/stream/preview @matches.json
+      <body> is JSON text, @<file> to read it from a file, or - for stdin. An answer of 400 or more is printed
+      too; its status and the server's error go to stderr, with exit 1. The API: https://worldsignals.dev/docs#api
 
 Ask for data, tell us what's wrong (anyone may send these; with an agent key or an access key, they come from
 that account):
@@ -207,6 +268,74 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function streamBody(o) {
   const body = { eventTypes: list(o.type), countries: list(o.country)?.map((c) => c.toUpperCase()), delivery: list(o.delivery), speed: o.speed };
   return Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined));
+}
+
+// Matches: conditions on one event type, saved with the stream (PATCH /api/me/stream {matches}) or tried with an
+// estimate. On the command line, one per --match: "<type>[@<codes>]:<condition>[;<condition>…]", e.g.
+// procurement.tender_published@PT,ES:data.cpv^=72. The API's shape is {type, countries?, where: [...]}.
+
+const MATCH_FORM = `--match is <type>:<condition>[;<condition>…], e.g. --match 'procurement.tender_published:data.cpv^=72', or with its own countries --match 'company.registered@GB,IE:subject.name*=bakery'`;
+const TYPE_ID = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/i;
+
+/** One --match as the match the API takes, or what is wrong with it. A condition with a ; in it goes in --matches. */
+export function parseMatch(text) {
+  const s = String(text ?? "").trim();
+  const colon = s.indexOf(":");
+  if (colon < 1) return MATCH_FORM;
+  const [type, codes, ...more] = s.slice(0, colon).split("@").map((x) => x.trim());
+  if (!TYPE_ID.test(type) || more.length || codes === "") return MATCH_FORM;
+  const where = s.slice(colon + 1).split(";").map((w) => w.trim()).filter(Boolean);
+  if (!where.length) return `--match '${s}' has no condition after the colon. ${MATCH_FORM}`;
+  const countries = codes === undefined ? undefined : list(codes).map((c) => c.toUpperCase());
+  return { type, ...(countries ? { countries } : {}), where };
+}
+
+/** A match as --match writes it, so what ws stream shows can be given back. No countries is the stream's; [] is all. */
+export const matchText = (m) => `${m.type}${Array.isArray(m.countries) ? `@${m.countries.length ? m.countries.join(",") : "all"}` : ""}:${(m.where ?? []).join(";")}`;
+
+/** Text given as is, @<file> read from that file, or - read from stdin. */
+async function readSource(arg, readStdin) {
+  if (arg === "-") return readStdin();
+  if (arg.startsWith("@")) return readFileSync(arg.slice(1), "utf8");
+  return arg;
+}
+
+/**
+ * The matches that --matches (a JSON list, from the text, a file or stdin) and each --match give, in that order:
+ * undefined when neither was given, [] for none (--match none), or what is wrong with them.
+ */
+export async function matchesOption(values, readStdin = () => Promise.resolve("")) {
+  const given = values.match ?? [];
+  if (values.matches === undefined && !given.length) return undefined;
+  const all = [];
+  if (values.matches !== undefined && values.matches.trim().toLowerCase() !== "none") {
+    const arg = values.matches.trim();
+    let text;
+    try {
+      text = await readSource(arg, readStdin);
+    } catch (e) {
+      return `Couldn't read --matches ${arg}: ${e.message}`;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return `--matches is a JSON list of matches, @<file> or - for stdin: [{"type": "vulnerability.published", "where": ["data.cvss.base_score>=9"]}]`;
+    }
+    // What ws stream --json prints works too.
+    if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.matches)) parsed = parsed.matches;
+    if (!Array.isArray(parsed)) return `--matches is a JSON list of matches, like [{"type": "vulnerability.published", "where": ["data.cvss.base_score>=9"]}]`;
+    all.push(...parsed);
+  }
+  const none = given.filter((m) => m.trim().toLowerCase() === "none").length;
+  if (none && (none < given.length || all.length)) return `--match none removes the saved matches: give it alone.`;
+  for (const m of given) {
+    if (m.trim().toLowerCase() === "none") continue;
+    const read = parseMatch(m);
+    if (typeof read === "string") return read;
+    all.push(read);
+  }
+  return all;
 }
 
 // The agent key. ws signup makes an Ed25519 key pair; the public key goes to the server, and the private key stays in
@@ -357,13 +486,23 @@ export function looks(tty, env = {}) {
 }
 
 /**
+/** All of a stream's text: stdin, for a body or matches given as -. */
+async function readAll(stream) {
+  let text = "";
+  stream.setEncoding?.("utf8");
+  for await (const chunk of stream) text += chunk;
+  return text;
+}
+
+/**
  * Runs one command. Returns the exit code; writes to `out` and `err`. `name` is how messages name the tool
  * (commandName); `sleep` is for tests of the commands that wait; `platform` picks how to open the browser. `tty` says which
- * of out and err are a terminal (styled for a person; plain otherwise), and `stdin` is the terminal's, for Enter to open a link.
+ * of out and err are a terminal (styled for a person; plain otherwise), and `stdin` is the terminal's, for Enter to open a link; `readStdin`
+ * reads all of stdin, for a body or matches given as -.
  */
 export async function run(
   argv,
-  { fetch = globalThis.fetch, env = process.env, out = console.log, err = console.error, spawn = nodeSpawn, signal, sleep: pause = sleep, name: p = "ws", platform = process.platform, tty = {}, stdin = null } = {},
+  { fetch = globalThis.fetch, env = process.env, out = console.log, err = console.error, spawn = nodeSpawn, signal, sleep: pause = sleep, name: p = "ws", platform = process.platform, tty = {}, stdin = null, readStdin = () => readAll(process.stdin) } = {},
 ) {
   const api = (env.WS_API || DEFAULT_API).replace(/\/$/, "");
   const [command, ...rest] = argv;
@@ -383,7 +522,7 @@ export async function run(
   }
 
   const style = { out: looks(tty.out, env), err: looks(tty.err, env) };
-  const ctx = { api, fetch, env, out, err, spawn, signal, pause, p, platform, style, stdin };
+  const ctx = { api, fetch, env, out, err, spawn, signal, pause, p, platform, style, stdin, readStdin };
   // init, pay and portal are the earlier names of signup, upgrade and billing, kept working.
   if (command === "signup" || command === "init") return initCommand(rest, ctx);
   if (command === "recover") return initCommand(rest, ctx, { recover: true });
@@ -392,52 +531,110 @@ export async function run(
   if (command === "connect") return connectCommand(rest, ctx);
   if (command === "status") return statusCommand(rest, ctx);
   if (command === "keys") return keysCommand(rest, ctx);
-  if (command === "stream") return streamCommand(rest, ctx);
+  if (command === "stream") return rest[0] === "preview" ? streamPreview(rest.slice(1), ctx) : streamCommand(rest, ctx);
   if (command === "request") return requestCommand(rest, ctx);
   if (command === "feedback") return feedbackCommand(rest, ctx);
+  if (command === "types") return typesCommand(rest, ctx);
+  if (command === "fields") return fieldsCommand(rest, ctx);
+  if (command === "estimate") return estimateCommand(rest, ctx);
+  if (command === "api") return apiCommand(rest, ctx);
 
-  if (command === "events") {
-    const { values } = parseArgs({
-      args: rest,
-      options: { type: { type: "string" }, country: { type: "string" }, after: { type: "string" }, limit: { type: "string" }, json: { type: "boolean" }, key: { type: "string" }, ...FILTER_OPTIONS },
-    });
-    const auth = credentials(values, env, api);
-    if (!auth) {
-      err(needsKey(p, "events"));
-      return 2;
-    }
-    const params = new URLSearchParams();
-    if (values.type) params.set("types", values.type);
-    if (values.country) params.set("country", values.country.toUpperCase());
-    addFilters(params, values);
-    if (values.after) params.set("after", values.after);
-    params.set("limit", values.limit ?? "20");
-    const url = `${api}/api/events?${params}`;
-    const res = await fetch(url, { headers: { "user-agent": "ws-cli/1", ...auth.headers("GET", url, "") } });
-    if (!res.ok) {
-      // A 400 says what is wrong; a 429 when to ask again (on the free plan, one poll with --after every 50 seconds).
-      const answer = await res.json().catch(() => ({}));
-      const reason = res.status === 400 || res.status === 429 ? answer.error : null;
-      err(refused(res.status, answer, auth, p) ?? (reason ? `${p} events: ${reason}` : `Couldn't read events (${res.status}).`));
-      return res.status === 400 ? 2 : 1;
-    }
-    const { events, cursor, hint } = await res.json();
-    // The hint goes to stderr, so --json output stays one event per line.
-    if (hint) err(`Note: ${hint}`);
-    if (values.json) {
-      for (const e of events) out(JSON.stringify(e));
-    } else {
-      for (const e of events) out(`${e.time.slice(0, 10)}  ${e.type.padEnd(30)}  ${(e.country ?? "").padEnd(2)}  ${e.title}`);
-      if (!events.length) out("No events match.");
-      if (cursor != null) out(`Next: ${p} events --after ${cursor}`);
-    }
-    return 0;
-  }
+  if (command === "events") return eventsCommand(rest, ctx);
 
   if (command === "watch") return watch(rest, ctx);
 
   err(`Unknown command "${command}". Run ${p} help.`);
   return 2;
+}
+
+/** Pages ws events reads back at most, by default, and at most with --pages. */
+const EVENT_PAGES = 30;
+const MAX_EVENT_PAGES = 100;
+/** Event numbers one page with field conditions searches (the server's SCAN_WINDOW, src/filters.ts). */
+const SCAN_WINDOW = 5000;
+
+// ws events: newest first, it pages back with before= while the answer says older events may still match (with field
+// conditions, each answer searches one window of recent events and can be empty with older: true), up to --limit
+// events or --pages answers. With --after <number> it is oldest first, for polling: one answer, and the cursor.
+async function eventsCommand(rest, { api, fetch, env, out, err, p }) {
+  const { values } = parseArgs({
+    args: rest,
+    options: { type: { type: "string" }, country: { type: "string" }, after: { type: "string" }, before: { type: "string" }, limit: { type: "string" }, pages: { type: "string" }, json: { type: "boolean" }, key: { type: "string" }, ...FILTER_OPTIONS },
+  });
+  const auth = credentials(values, env, api);
+  if (!auth) {
+    err(needsKey(p, "events"));
+    return 2;
+  }
+  const maxPages = values.pages === undefined ? EVENT_PAGES : Number(values.pages);
+  if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > MAX_EVENT_PAGES) {
+    err(`--pages is how many answers to read back at most, 1 to ${MAX_EVENT_PAGES} (default ${EVENT_PAGES}).`);
+    return 2;
+  }
+  const params = new URLSearchParams();
+  if (values.type) params.set("types", values.type);
+  if (values.country) params.set("country", values.country.toUpperCase());
+  addFilters(params, values);
+  if (values.after) params.set("after", values.after);
+  const limit = Math.min(200, Math.max(1, Number(values.limit ?? 20) || 20));
+  const newestFirst = !/^\d+$/.test(values.after ?? "");
+  const events = [];
+  let first = null;
+  let last = null;
+  let before = values.before;
+  let pages = 0;
+  for (;;) {
+    // Each page asks for what is still missing, so its before is exactly where the next one carries on.
+    if (before !== undefined) params.set("before", before);
+    params.set("limit", String(limit - events.length));
+    const url = `${api}/api/events?${params}`;
+    let res;
+    try {
+      res = await fetch(url, { headers: { "user-agent": "ws-cli/1", ...auth.headers("GET", url, "") } });
+    } catch (e) {
+      if (!pages) {
+        err(`Couldn't reach WorldSignals (${e.message}).`);
+        return 1;
+      }
+      err(`Note: stopped looking further back (${e.message}).`);
+      break;
+    }
+    if (!res.ok) {
+      // A 400 says what is wrong; a 429 when to ask again (on the free plan, one poll with --after every 50 seconds).
+      const answer = await res.json().catch(() => ({}));
+      const reason = res.status === 400 || res.status === 429 ? answer.error : null;
+      if (pages) {
+        // What earlier pages found is still printed; the rest is for another time.
+        err(`Note: stopped looking further back (${res.status}${answer.error ? `: ${answer.error}` : ""}).`);
+        break;
+      }
+      err(refused(res.status, answer, auth, p) ?? (reason ? `${p} events: ${reason}` : `Couldn't read events (${res.status}).`));
+      return res.status === 400 ? 2 : 1;
+    }
+    last = await res.json();
+    first ??= last;
+    pages += 1;
+    events.push(...(last.events ?? []));
+    before = last.before == null ? undefined : String(last.before);
+    if (!newestFirst || !last.older || before === undefined || events.length >= limit || pages >= maxPages) break;
+  }
+  // The hint goes to stderr, so --json output stays one event per line.
+  if (first?.hint) err(`Note: ${first.hint}`);
+  const older = Boolean(newestFirst && last?.older && before !== undefined);
+  if (values.json) {
+    for (const e of events) out(JSON.stringify(e));
+    if (older && events.length < limit) err(`Note: older events may match too: add --before ${before} to look further back.`);
+    return 0;
+  }
+  for (const e of events) out(`${e.time.slice(0, 10)}  ${e.type.padEnd(30)}  ${(e.country ?? "").padEnd(2)}  ${e.title}`);
+  if (!events.length) {
+    if (older) {
+      out(`No events match in the ${pages === 1 ? "newest" : `${pages} windows of the newest`} events searched (about ${(pages * SCAN_WINDOW).toLocaleString("en")} events back).`);
+      out(`Older ones may: add --before ${before} to look further back, or --pages <n> (up to ${MAX_EVENT_PAGES}) to read more at once.`);
+    } else out(pages > 1 ? `No events match: searched back to the oldest events kept (the last 30 days).` : "No events match.");
+  } else if (older) out(`Older: add --before ${before} to look further back.`);
+  if (first?.cursor != null) out(`Next: ${p} events --after ${first.cursor}`);
+  return 0;
 }
 
 /** Sends one signed request for the agent itself. Resolves with the status and the parsed answer. */
@@ -926,12 +1123,12 @@ async function keysCommand(rest, ctx) {
 }
 
 // ws stream: the saved stream, shown from GET /api/me and changed with PATCH /api/me/stream.
-async function streamCommand(rest, { api, fetch, env, out, err, p }) {
+async function streamCommand(rest, { api, fetch, env, out, err, p, readStdin }) {
   const set = rest[0] === "set";
   const str = { type: "string" };
   const { values } = parseArgs({
     args: set ? rest.slice(1) : rest,
-    options: { key: str, json: { type: "boolean" }, ...(set ? { type: str, country: str, delivery: str, speed: str } : {}) },
+    options: { key: str, json: { type: "boolean" }, ...(set ? { type: str, country: str, delivery: str, speed: str, match: { type: "string", multiple: true }, matches: str } : {}) },
   });
   const auth = credentials(values, env, api);
   if (!auth) {
@@ -941,8 +1138,14 @@ async function streamCommand(rest, { api, fetch, env, out, err, p }) {
   let res;
   if (set) {
     const changes = streamBody(values);
+    const matches = await matchesOption(values, readStdin);
+    if (typeof matches === "string") {
+      err(matches);
+      return 2;
+    }
+    if (matches !== undefined) changes.matches = matches;
     if (!Object.keys(changes).length) {
-      err(`${p} stream set needs --type, --country, --delivery or --speed, e.g. ${p} stream set --type company.registered --country PT,ES`);
+      err(`${p} stream set needs --type, --country, --match, --delivery or --speed, e.g. ${p} stream set --type company.registered --country PT,ES`);
       return 2;
     }
     const url = `${api}/api/me/stream`;
@@ -954,13 +1157,17 @@ async function streamCommand(rest, { api, fetch, env, out, err, p }) {
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // Past the plan's matches, the server says how many it includes and where to get more (limit has the numbers).
+    const overPlan = res.status === 402 && body.limit && body.error;
     err(
-      refused(res.status, body, auth, p) ??
-        (res.status === 400 ? `${p} stream set: ${body.error}` : `Couldn't ${set ? "save" : "read"} your stream (${res.status})${body.error ? `: ${body.error}` : "."}`),
+      overPlan
+        ? `${p} stream set: ${body.error}`
+        : (refused(res.status, body, auth, p) ??
+            (res.status === 400 ? `${p} stream set: ${body.error}` : `Couldn't ${set ? "save" : "read"} your stream (${res.status})${body.error ? `: ${body.error}` : "."}`)),
     );
     return res.status === 400 ? 2 : 1;
   }
-  const stream = { eventTypes: body.eventTypes ?? [], countries: body.countries ?? [], delivery: body.delivery ?? [], speed: body.speed ?? null };
+  const stream = { eventTypes: body.eventTypes ?? [], countries: body.countries ?? [], delivery: body.delivery ?? [], speed: body.speed ?? null, matches: Array.isArray(body.matches) ? body.matches : [] };
   // The hint goes to stderr, so --json output stays one line of JSON.
   if (body.hint) err(`Note: ${body.hint}`);
   if (values.json) {
@@ -971,8 +1178,68 @@ async function streamCommand(rest, { api, fetch, env, out, err, p }) {
   const countries = stream.countries.filter((c) => c !== "WW");
   out(`Event types: ${stream.eventTypes.length ? stream.eventTypes.join(", ") : `none yet (${p} stream set --type …)`}`);
   out(`Countries:   ${countries.length ? countries.join(", ") : "every country"}`);
+  stream.matches.forEach((m, i) => out(`${i ? "            " : "Matches:    "} ${matchText(m)}`));
   if (stream.delivery.length) out(`Delivery:    ${stream.delivery.join(", ")}`);
   if (stream.speed) out(`Speed:       ${stream.speed}`);
+  return 0;
+}
+
+// ws stream preview: POST /api/me/stream/preview, what each match would have sent among the latest events of its type,
+// with up to three of them, before saving. With no --match, the matches saved with the stream.
+async function streamPreview(rest, { api, fetch, env, out, err, p, readStdin, style }) {
+  const str = { type: "string" };
+  const { values } = parseArgs({ args: rest, options: { match: { type: "string", multiple: true }, matches: str, country: str, key: str, json: { type: "boolean" } } });
+  const matches = await matchesOption(values, readStdin);
+  if (typeof matches === "string") {
+    err(matches);
+    return 2;
+  }
+  if (matches !== undefined && !matches.length) {
+    err(`${p} stream preview tries the matches given with --match, or with none the ones saved with the stream: --match none has nothing to preview.`);
+    return 2;
+  }
+  const auth = credentials(values, env, api);
+  if (!auth) {
+    err(needsKey(p, "stream preview"));
+    return 2;
+  }
+  const payload = { ...(matches ? { matches } : {}), ...(values.country ? { countries: list(values.country).map((c) => c.toUpperCase()) } : {}) };
+  const url = `${api}/api/me/stream/preview`;
+  const body = JSON.stringify(payload);
+  let res;
+  try {
+    res = await fetch(url, { method: "POST", headers: { "user-agent": `ws-cli/${VERSION}`, "content-type": "application/json", ...auth.headers("POST", url, body) }, body });
+  } catch (e) {
+    err(`Couldn't reach WorldSignals (${e.message}).`);
+    return 1;
+  }
+  const answer = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 400) {
+      err(`${p} stream preview: ${answer.error ?? "WorldSignals refused it."}${matches ? "" : ` (No saved matches? Give some with --match '<type>:<condition>'.)`}`);
+      return 2;
+    }
+    const later = res.status === 429 ? ` ${retryWhen(res.headers?.get?.("retry-after"))}` : "";
+    err(refused(res.status, answer, auth, p) ?? `Couldn't preview (${res.status})${answer.error ? `: ${answer.error}` : "."}${later}`);
+    return 1;
+  }
+  if (values.json) {
+    out(JSON.stringify(answer));
+    return 0;
+  }
+  const previews = Array.isArray(answer.previews) ? answer.previews : [];
+  if (!previews.length) out("Nothing to preview: the stream has no saved matches.");
+  let shown = 0;
+  for (const pv of previews) {
+    out(style.out.strong(matchText(pv.match ?? {})));
+    out(`  ${n(pv.matched)} of the latest ${n(pv.of)} ${pv.match?.type ?? ""} events${pv.since ? `, since ${when(pv.since)}` : ""}`);
+    for (const e of pv.examples ?? []) {
+      shown += 1;
+      out(`    ${String(e.time ?? "").slice(0, 10)}  ${String(e.country ?? "").padEnd(2)}  ${e.title ?? ""}`);
+    }
+  }
+  if (answer.limit?.note) err(`Note: ${answer.limit.note}`);
+  if (shown) out("The examples count toward this month's events, as events read do.");
   return 0;
 }
 
@@ -1098,6 +1365,326 @@ async function feedbackCommand(rest, ctx) {
   }
   out(`${ctx.style.out.label("Sent")}${body.id ? ` (${body.id})` : ""}.${body.message ? ` ${body.message}` : ""}`);
   return 0;
+}
+
+// ws types, ws fields and ws estimate: what to ask for before saving a stream. The catalogue (GET /api/catalogue) and
+// the fields (GET /api/fields) are public, so they go without a key; an estimate (GET /api/events/estimate) is the
+// account's, and counts a request but no events.
+
+const COUNTRIES_SHOWN = 6;
+const n = (x) => Number(x ?? 0).toLocaleString("en");
+
+/** GET of a public route, with no key. Answers {status, body}, or {error} when WorldSignals couldn't be reached. */
+async function publicGet({ api, fetch }, path) {
+  try {
+    const res = await fetch(`${api}${path}`, { headers: { "user-agent": `ws-cli/${VERSION}`, accept: "application/json" } });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Each event type of a catalogue (GET /api/catalogue) with where it is collected: `countries` in the order its
+ * sources list them, without XX; `every_country` when its sources read about any country (vulnerabilities, sanctions,
+ * outages: countries is then empty, and their events may be about the whole world, XX); `worldwide` when its events
+ * can be about the whole world (XX); `collected` false when no source collects it yet.
+ */
+export function catalogueTypes(catalogue) {
+  const every = new Set((catalogue.countries ?? []).filter((c) => c !== "XX" && c !== "WW"));
+  const free = new Set(catalogue.alwaysFree ?? []);
+  const out = [];
+  for (const f of catalogue.families ?? []) {
+    for (const t of f.types ?? []) {
+      const codes = [...new Set((t.connectors ?? []).flatMap((c) => c.countries ?? []))];
+      const own = codes.filter((c) => c !== "XX" && c !== "WW");
+      const everywhere = every.size > 0 && [...every].every((c) => own.includes(c));
+      out.push({
+        type: t.id,
+        label: t.label,
+        family: f.id,
+        visibility: t.visibility,
+        collected: codes.length > 0,
+        countries: everywhere ? [] : own,
+        every_country: everywhere,
+        worldwide: everywhere || codes.includes("XX") || codes.includes("WW"),
+        always_free: free.has(t.id),
+      });
+    }
+  }
+  return out;
+}
+
+/** Where a type is collected, in a few words: a few country codes, worldwide (XX), or planned. */
+export function collectedWhere(t) {
+  if (!t.collected) return "planned";
+  if (t.every_country) return "any country, or worldwide (XX)";
+  const shown = t.countries.slice(0, COUNTRIES_SHOWN).join(", ");
+  const more = t.countries.length > COUNTRIES_SHOWN ? ` +${t.countries.length - COUNTRIES_SHOWN} more` : "";
+  return [shown && `${shown}${more}`, t.worldwide && "worldwide (XX)"].filter(Boolean).join(", ");
+}
+
+// ws types: the event types, by family, and where each is collected.
+async function typesCommand(rest, ctx) {
+  const { out, err, p } = ctx;
+  const { values } = parseArgs({ args: rest, options: { family: { type: "string" }, json: { type: "boolean" } } });
+  const answer = await publicGet(ctx, "/api/catalogue");
+  if (answer.error) {
+    err(`Couldn't reach WorldSignals (${answer.error}).`);
+    return 1;
+  }
+  if (answer.status !== 200 || !Array.isArray(answer.body.families)) {
+    err(`Couldn't read the event types (${answer.status})${answer.body.error ? `: ${answer.body.error}` : "."}`);
+    return 1;
+  }
+  const families = answer.body.families;
+  const asked = list(values.family)?.map((f) => f.toLowerCase());
+  const unknown = asked?.filter((f) => !families.some((x) => x.id === f)) ?? [];
+  if (unknown.length) {
+    err(`No family ${unknown.join(", ")}. The families: ${families.map((f) => f.id).join(", ")}.`);
+    return 2;
+  }
+  const types = catalogueTypes(answer.body).filter((t) => !asked || asked.includes(t.family));
+  if (values.json) {
+    for (const t of types) out(JSON.stringify(t));
+    return 0;
+  }
+  const look = ctx.style.out;
+  const idWidth = Math.min(40, Math.max(...types.map((t) => t.type.length)));
+  const labelWidth = Math.min(44, Math.max(...types.map((t) => (t.label ?? "").length)));
+  for (const f of families) {
+    const own = types.filter((t) => t.family === f.id);
+    if (!own.length) continue;
+    out(look.label(`${f.label ?? f.id} (${f.id})`));
+    for (const t of own) {
+      const notes = [collectedWhere(t), t.always_free && "always free", t.visibility === "private" && "private: your own data"].filter(Boolean).join("; ");
+      out(`  ${t.type.padEnd(idWidth)}  ${(t.label ?? "").padEnd(labelWidth)}  ${notes}`);
+    }
+  }
+  const collected = types.filter((t) => t.collected).length;
+  out(`Collected: ${collected} of ${types.length} types. ${p} fields <type> lists the fields a condition can test.`);
+  return 0;
+}
+
+const VALUES_SHOWN = 20;
+
+// ws fields <type>: the fields of one type, for --where and --match.
+async function fieldsCommand(rest, ctx) {
+  const { out, err, p } = ctx;
+  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { json: { type: "boolean" } } });
+  const type = positionals[0]?.trim();
+  if (!type || positionals.length > 1) {
+    err(`${p} fields needs one event type, e.g. ${p} fields procurement.tender_published (${p} types lists them).`);
+    return 2;
+  }
+  const answer = await publicGet(ctx, `/api/fields?${new URLSearchParams({ type })}`);
+  if (answer.error) {
+    err(`Couldn't reach WorldSignals (${answer.error}).`);
+    return 1;
+  }
+  if (answer.status === 404 || answer.status === 400) {
+    err(`${p} fields: ${answer.body.error ?? `No event type ${type}.`} (${p} types lists them.)`);
+    return 2;
+  }
+  if (answer.status !== 200 || !Array.isArray(answer.body.fields)) {
+    err(`Couldn't read the fields (${answer.status})${answer.body.error ? `: ${answer.body.error}` : "."}`);
+    return 1;
+  }
+  if (values.json) {
+    out(JSON.stringify(answer.body));
+    return 0;
+  }
+  const fields = answer.body.fields;
+  const kindOf = (f) => `${f.kind}${f.list ? " (list)" : ""}`;
+  const pathWidth = Math.min(48, Math.max(...fields.map((f) => f.path.length)));
+  const kindWidth = Math.max(...fields.map((f) => kindOf(f).length));
+  out(`${type}: ${fields.length} fields, for --where and --match conditions.`);
+  for (const f of fields) {
+    let about = f.label ?? "";
+    if (Array.isArray(f.values) && f.values.length) {
+      const shown = f.values.slice(0, VALUES_SHOWN).join("|");
+      const more = f.values.length > VALUES_SHOWN ? ` (+${f.values.length - VALUES_SHOWN} more; --json lists them all)` : "";
+      about = `${about ? `${about}: ` : ""}${shown}${more}`;
+    }
+    out(`  ${f.path.padEnd(pathWidth)}  ${kindOf(f).padEnd(kindWidth)}  ${about}`);
+  }
+  const example = fields.find((f) => f.kind === "enum" && f.values?.length) ?? fields.find((f) => f.kind === "number") ?? fields.find((f) => f.kind === "text");
+  if (example) {
+    const condition = example.kind === "enum" ? `${example.path}=${example.values[0]}` : example.kind === "number" ? `${example.path}>=1` : `${example.path}*=word`;
+    out(`Operators: = != > >= < <=, text *= !*= ^= $= ~= !~=, | between values. E.g. --where '${condition}'`);
+    out(`  or ${p} stream set --match '${type}:${condition}'`);
+  }
+  return 0;
+}
+
+/** --since for an estimate: an ISO time, or a span back from now (30m, 24h, 7d); the ISO time, or null. */
+export function sinceTime(value, now = Date.now()) {
+  const v = String(value ?? "").trim();
+  const span = /^(\d+)\s*(m|h|d)$/i.exec(v);
+  if (span) return new Date(now - Number(span[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[span[2].toLowerCase()]).toISOString();
+  const ms = Date.parse(v);
+  return /^\d{4}-\d{2}-\d{2}/.test(v) && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+const KEPT_DAYS = 30; // events are kept 30 days, so an estimate counts at most that far back
+const when = (iso) => (typeof iso === "string" ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : "");
+
+// ws estimate: how many events filters found since a time, before reading or saving anything.
+async function estimateCommand(rest, ctx) {
+  const { api, fetch, env, out, err, p, readStdin } = ctx;
+  const str = { type: "string" };
+  const { values } = parseArgs({
+    args: rest,
+    options: { type: str, country: str, since: str, json: { type: "boolean" }, key: str, match: { type: "string", multiple: true }, matches: str, ...FILTER_OPTIONS },
+  });
+  const since = sinceTime(values.since ?? "7d");
+  if (!since) {
+    err(`--since is an ISO time, e.g. 2026-10-20 or 2026-10-20T08:00:00Z, or a span back from now: 24h, 7d, 30d.`);
+    return 2;
+  }
+  const matches = await matchesOption(values, readStdin);
+  if (typeof matches === "string") {
+    err(matches);
+    return 2;
+  }
+  const auth = credentials(values, env, api);
+  if (!auth) {
+    err(needsKey(p, "estimate"));
+    return 2;
+  }
+  const params = new URLSearchParams({ since });
+  // A match's type is one to count, as saving the match would add it to the stream.
+  const types = [...new Set([...(list(values.type) ?? []), ...(matches ?? []).map((m) => m?.type).filter((t) => typeof t === "string")])];
+  if (types.length) params.set("types", types.join(","));
+  if (values.country) params.set("country", values.country.toUpperCase());
+  addFilters(params, values);
+  if (matches?.length) params.set("matches", JSON.stringify(matches));
+  const url = `${api}/api/events/estimate?${params}`;
+  let res;
+  try {
+    res = await fetch(url, { headers: { "user-agent": `ws-cli/${VERSION}`, ...auth.headers("GET", url, "") } });
+  } catch (e) {
+    err(`Couldn't reach WorldSignals (${e.message}).`);
+    return 1;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const reason = res.status === 400 || res.status === 429 ? body.error : null;
+    err(
+      refused(res.status, body, auth, p) ??
+        (reason ? `${p} estimate: ${reason}${res.status === 429 ? ` ${retryWhen(res.headers?.get?.("retry-after"))}` : ""}` : `Couldn't estimate (${res.status})${body.error ? `: ${body.error}` : "."}`),
+    );
+    return res.status === 400 ? 2 : 1;
+  }
+  if (values.json) {
+    out(JSON.stringify(body));
+    return 0;
+  }
+  const count = Number(body.count ?? 0);
+  // capped: more than the server counts; not exact: text conditions and matches are checked event by event, after
+  // counting, so the count is what the other filters let through.
+  const total = body.capped ? `More than ${n(count)}` : body.exact === false ? `Up to ${n(count)}` : n(count);
+  out(`${total} event${count === 1 && !body.capped ? "" : "s"} since ${when(body.since ?? since)}.`);
+  if (body.exact === false) out("  (An upper bound: text conditions and matches are checked on each event, after this count.)");
+  out(`  ${n(body.counts_toward_usage)} count toward this month's events`);
+  out(`  ${n(body.always_free)} always free (vulnerabilities and WorldSignals' notices)`);
+  if (body.plan === "free" || Number(body.locked) > 0) out(`  ${n(body.locked)} would arrive locked, past the free plan's events this month`);
+  const a = body.allowance ?? {};
+  const plan = planName(body.plan);
+  if (a.limit == null) out(`This month: ${n(a.used)} events used; the ${plan || "account's"} plan has no monthly limit.`);
+  else out(`This month: ${n(a.used)} of ${n(a.limit)} events used, ${n(a.left)} left${plan ? ` (${plan} plan)` : ""}.`);
+  // The same pace for a month, from as far back as events are kept.
+  const days = Math.min(KEPT_DAYS, (Date.now() - Date.parse(body.since ?? since)) / 86_400_000);
+  if (!body.capped && days >= 1) {
+    const perMonth = (x) => n(Math.round((Number(x ?? 0) * 30) / days));
+    const counted = Number(body.counts_toward_usage ?? 0);
+    out(`At this pace: ${body.exact === false ? "up to " : "about "}${perMonth(count)} a month${counted !== count ? `, ${perMonth(counted)} of them counting toward usage` : ""}.`);
+  }
+  out("Estimating uses none of the monthly events.");
+  // Whether the plan may read these back (ws events --after <time>, Replay) is another matter: say so, apart.
+  if (body.allowed === false && body.error) err(`Note: ${body.error}`);
+  return 0;
+}
+
+// ws api: any call to the WorldSignals API, signed with the agent key or sent with the access key, as the other
+// commands do. Only paths under /api/ on the server WS_API names: never a link to another host, and not /mcp.
+
+const API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+/** The URL `ws api` sends to, from the path given, or what is wrong with it. A full link is fine on the same server. */
+export function apiTarget(api, path, p = "ws") {
+  let u;
+  try {
+    u = new URL(String(path ?? ""), `${api}/`);
+  } catch {
+    return `${p} api needs a path under /api/, e.g. ${p} api GET /api/me`;
+  }
+  const home = new URL(api);
+  if (u.origin !== home.origin) return `${p} api only sends to ${home.host}: give a path such as /api/me, not a link to ${u.host || u.protocol}.`;
+  if (!u.pathname.startsWith("/api/")) return `${p} api sends requests under /api/ only, e.g. ${p} api GET /api/me${u.pathname === "/mcp" || u.pathname.startsWith("/mcp/") ? " (the MCP server at /mcp has its own clients)" : ""}.`;
+  return `${home.origin}${u.pathname}${u.search}`;
+}
+
+async function apiCommand(rest, ctx) {
+  const { api, fetch, env, out, err, p, readStdin } = ctx;
+  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { key: { type: "string" }, raw: { type: "boolean" } } });
+  const [m, path, bodyArg, ...more] = positionals;
+  const method = (m ?? "").toUpperCase();
+  if (!API_METHODS.includes(method) || !path || more.length) {
+    err(`${p} api is ${p} api <METHOD> <path> [<body>], e.g. ${p} api GET /api/me or ${p} api PATCH /api/me/stream '{"speed": "daily"}'. METHOD is ${API_METHODS.join(", ")}.`);
+    return 2;
+  }
+  const url = apiTarget(api, path, p);
+  if (!url.startsWith("http")) {
+    err(url);
+    return 2;
+  }
+  let body = "";
+  if (bodyArg !== undefined) {
+    if (method === "GET" || method === "DELETE") {
+      err(`${p} api ${method} sends no body: put what it asks for in the path's query, e.g. ${p} api GET '/api/events?types=company.registered&limit=5'.`);
+      return 2;
+    }
+    let text;
+    try {
+      text = await readSource(bodyArg, readStdin);
+    } catch (e) {
+      err(`Couldn't read ${bodyArg}: ${e.message}`);
+      return 2;
+    }
+    try {
+      body = JSON.stringify(JSON.parse(text));
+    } catch {
+      err(`The body is JSON, e.g. '{"speed": "daily"}', @<file> to read it from a file, or - for stdin${bodyArg === "-" || bodyArg.startsWith("@") ? `: ${bodyArg} isn't JSON` : ""}.`);
+      return 2;
+    }
+  }
+  const auth = credentials(values, env, api);
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: { "user-agent": `ws-cli/${VERSION}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}), ...(auth ? auth.headers(method, url, body) : {}) },
+      ...(body ? { body } : {}),
+    });
+  } catch (e) {
+    err(`Couldn't reach WorldSignals (${e.message}).`);
+    return 1;
+  }
+  const text = await res.text().catch(() => "");
+  let answer;
+  try {
+    answer = text ? JSON.parse(text) : undefined;
+  } catch {}
+  if (answer !== undefined) out(values.raw ? JSON.stringify(answer) : JSON.stringify(answer, null, 2));
+  else if (text) out(text);
+  if (res.status < 400) return 0;
+  const said = answer && typeof answer === "object" && typeof answer.error === "string" ? `: ${answer.error}` : "";
+  const later = res.status === 429 ? ` ${retryWhen(res.headers?.get?.("retry-after"))}` : "";
+  err(`${p} api: ${method} ${new URL(url).pathname} answered ${res.status}${said}${later}`);
+  if (res.status === 401 && !auth) err(needsKey(p, "api"));
+  else if (isGone(res.status, answer) && auth?.kind === "agent") err(agentGone(p, auth.agent.agent_id));
+  return 1;
 }
 
 // ws watch: the live stream (GET /api/stream, Server-Sent Events). Each event has a number, sent as the
