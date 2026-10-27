@@ -3,8 +3,15 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
-## Unreleased
+## 0.5.0 (unreleased)
 
+- New: `request "<what>"` asks for data WorldSignals doesn't collect yet (`--countries`, `--use`, `--source` with an
+  https:// link). The answer says how many have asked for the same and which collected event types come closest,
+  where they're collected and where not yet.
+- New: `feedback "<message>"` sends a bug, a problem (the default) or an idea (`--kind`), with the CLI's version.
+- Both work with no account: with `--key` or `WS_KEY` they come from that key's account, else signed with the agent
+  key if the machine has one, else anonymously. `--json` prints the answer as one object. A refused request (400)
+  or one too many (429, with when to try again) is said on stderr, with exit 1.
 - `--json` for agents on `watch`, `upgrade`, `connect` and `signup`: the payment link and the connect code as one
   JSON object, with the API's field names (`pay.url`, `pay.plan`, `pay.billing`, `connect.user_code`,
   `connect.verification_uri`, `connect.verification_uri_complete`, `connect.expires_at`) and a `next` sentence.

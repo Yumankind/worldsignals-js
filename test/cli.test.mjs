@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
+import { VERSION, agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, retryWhen, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
 
 // Never a real browser from a test: commands that open a link (upgrade, billing, connect) get a spawn that does
 // nothing and a platform with no browser, unless the test brings its own to check that it opens.
@@ -61,7 +61,7 @@ test("messages name the command as it was run", async () => {
   assert.match(io.lines.err[0], /npx worldsignals upgrade .*npx worldsignals connect/);
   assert.doesNotMatch(io.lines.err[0], /(^|[^x] )ws /);
   const text = help("npx worldsignals");
-  for (const c of ["signup", "upgrade", "connect", "status", "billing", "keys rotate", "recover", "events", "watch"]) assert.match(text, new RegExp(`^ {2}npx worldsignals ${c}`, "m"));
+  for (const c of ["signup", "upgrade", "connect", "status", "billing", "keys rotate", "recover", "events", "watch", "request", "feedback"]) assert.match(text, new RegExp(`^ {2}npx worldsignals ${c}`, "m"));
   assert.doesNotMatch(text, /^ {2}ws /m);
   // The earlier names still work, but help shows only the new ones.
   assert.doesNotMatch(text, /worldsignals (init|pay|portal)\b|--link/);
@@ -766,4 +766,161 @@ test("watch waits as long as a 429 asks, says why, and connects again", async ()
   assert.ok(Date.now() - started >= 900, "waited the second it was asked to");
   assert.match(io.lines.err[0], /already has its live connection open.*Trying again in 1 s\.$/);
   assert.deepEqual(io.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
+});
+
+// ws request and ws feedback: anyone may send them. With an access key they come from its account, else signed with
+// the agent key if there is one, else anonymous; always with X-WS-Client: cli.
+const REQUEST_ANSWER = {
+  id: "req_1",
+  status: "recorded",
+  asked_by: 3,
+  closest: [
+    { type: "company.registered", label: "New companies", collected_in: ["PT", "ES", "FR"], missing: ["MT"] },
+    { type: "company.insolvency", label: "Insolvencies", collected_in: ["MT"], missing: [] },
+  ],
+  message: "We collect what's asked for most first.",
+};
+
+/** A fake server that answers every request with `status` and `body`, and `headers`. */
+function answering(status, body, headers = {}) {
+  const calls = [];
+  const fetch = async (url, init = {}) => (calls.push({ url, init }), new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } }));
+  return { fetch, calls };
+}
+
+test("request sends what, the countries uppercased, the use and the source, anonymously, and prints the answer", async () => {
+  const server = answering(201, REQUEST_ANSWER);
+  const io = capture();
+  const args = ["request", "company registrations in Malta", "--countries", "mt, pt", "--use", "supplier checks", "--source", "https://mbr.mt/register"];
+  assert.equal(await run(args, { fetch: server.fetch, env: agentEnv(), ...io }), 0);
+  const { url, init } = server.calls[0];
+  assert.equal(url, "https://ws.test/api/requests");
+  assert.equal(init.method, "POST");
+  assert.deepEqual(JSON.parse(init.body), { what: "company registrations in Malta", countries: ["MT", "PT"], use: "supplier checks", source_url: "https://mbr.mt/register" });
+  assert.equal(init.headers["x-ws-client"], "cli");
+  assert.equal(init.headers["content-type"], "application/json");
+  assert.equal(init.headers.authorization, undefined, "anonymous: no access key");
+  assert.equal(init.headers["x-ws-agent"], undefined, "anonymous: no agent key");
+  assert.equal(init.headers["x-ws-signature"], undefined);
+  assert.deepEqual(io.lines.out, [
+    "Recorded: company registrations in Malta.",
+    "3 people asked for this.",
+    "Closest collected today:",
+    "  New companies (company.registered): in PT, ES, FR; not yet in MT",
+    "  Insolvencies (company.insolvency): in MT",
+    "We collect what's asked for most first.",
+  ]);
+  assert.deepEqual(io.lines.err, []);
+  // Only what was given; one person; nothing close.
+  const one = answering(201, { ...REQUEST_ANSWER, asked_by: 1, closest: [], message: "" });
+  const io2 = capture();
+  assert.equal(await run(["request", "ship", "arrivals", "in", "Sines."], { fetch: one.fetch, env: agentEnv(), ...io2 }), 0);
+  assert.deepEqual(JSON.parse(one.calls[0].init.body), { what: "ship arrivals in Sines." });
+  assert.deepEqual(io2.lines.out, ["Recorded: ship arrivals in Sines.", "1 person asked for this."]);
+});
+
+test("request and feedback send an access key when given, else sign with the agent key", async () => {
+  const keyed = answering(201, REQUEST_ANSWER);
+  assert.equal(await run(["request", "x"], { fetch: keyed.fetch, env: { ...agentEnv(), WS_KEY: "wsk_1.a" }, ...capture() }), 0);
+  assert.equal(await run(["feedback", "y", "--key", "wsk_2.b"], { fetch: keyed.fetch, env: agentEnv(), ...capture() }), 0);
+  assert.deepEqual(keyed.calls.map((c) => [c.init.headers.authorization, c.init.headers["x-ws-agent"], c.init.headers["x-ws-client"]]), [
+    ["Bearer wsk_1.a", undefined, "cli"],
+    ["Bearer wsk_2.b", undefined, "cli"],
+  ]);
+  const { env, server } = await withAgent({ "POST /api/requests": () => [201, REQUEST_ANSWER], "POST /api/feedback": () => [201, { id: "fb_1", status: "received", message: "Thanks." }] });
+  assert.equal(await run(["request", "x", "--countries", "pt"], { fetch: server.fetch, env, ...capture() }), 0);
+  assert.equal(await run(["feedback", "y"], { fetch: server.fetch, env, ...capture() }), 0);
+  assert.deepEqual(server.calls.map((c) => [c.method, c.path, c.agentId, c.signed, c.headers.authorization, c.headers["x-ws-client"]]), [
+    ["POST", "/api/requests", "agt_1", true, undefined, "cli"],
+    ["POST", "/api/feedback", "agt_1", true, undefined, "cli"],
+  ]);
+  // A refused signature says so, as for the other commands.
+  const io = capture();
+  assert.equal(await run(["request", "x"], { fetch: async () => new Response(JSON.stringify({ error: "Bad signature." }), { status: 401 }), env, ...io }), 1);
+  assert.match(io.lines.err[0], /didn't accept this agent's signature \(Bad signature\.\)/);
+});
+
+test("request --json prints the answer as is, one line, never styled; without it, styled only at a terminal", async () => {
+  const io = capture();
+  const tty = { out: true, err: true };
+  assert.equal(await run(["request", "x", "--json"], { ...answering(201, REQUEST_ANSWER), env: { ...agentEnv(), COLORTERM: "truecolor" }, tty, ...io }), 0);
+  assert.equal(io.lines.out.length, 1);
+  assert.doesNotMatch(io.lines.out[0], /\x1b/);
+  assert.deepEqual(JSON.parse(io.lines.out[0]), REQUEST_ANSWER);
+  const styled = capture();
+  assert.equal(await run(["request", "x"], { ...answering(201, REQUEST_ANSWER), env: { ...agentEnv(), COLORTERM: "truecolor" }, tty, ...styled }), 0);
+  assert.match(styled.lines.out[0], /^\x1b\[1;38;2;255;106;51mRecorded:\x1b\[0m x\.$/);
+  assert.match(styled.lines.out[3], /\x1b\[1mNew companies\x1b\[22m \(company\.registered\)/);
+  const plain = capture();
+  assert.equal(await run(["request", "x"], { ...answering(201, REQUEST_ANSWER), env: { ...agentEnv(), NO_COLOR: "1" }, tty, ...plain }), 0);
+  assert.doesNotMatch(plain.lines.out.join("\n"), /\x1b/);
+});
+
+test("request says the server's error for a 400, and when to try again for a 429, on stderr with exit 1", async () => {
+  const bad = capture();
+  assert.equal(await run(["request", "x", "--countries", "UK"], { ...answering(400, { error: "Not ISO country codes we know: UK (the United Kingdom is GB)." }), env: agentEnv(), ...bad }), 1);
+  assert.deepEqual(bad.lines.out, []);
+  assert.deepEqual(bad.lines.err, ["ws request: Not ISO country codes we know: UK (the United Kingdom is GB)."]);
+  const busy = capture();
+  assert.equal(await run(["request", "x", "--json"], { ...answering(429, { error: "Ten requests an hour from one network." }, { "retry-after": "30" }), env: agentEnv(), ...busy }), 1);
+  assert.deepEqual(busy.lines.out, [], "nothing on stdout, even with --json");
+  assert.deepEqual(busy.lines.err, ["ws request: Ten requests an hour from one network. Try again in 30 seconds."]);
+  const fb = capture();
+  assert.equal(await run(["feedback", "y"], { ...answering(429, { error: "Too many." }, { "retry-after": "600" }), env: agentEnv(), ...fb }), 1);
+  assert.deepEqual(fb.lines.err, ["ws feedback: Too many. Try again in 10 minutes."]);
+  const down = capture();
+  assert.equal(await run(["request", "x"], { fetch: async () => { throw new Error("getaddrinfo ENOTFOUND"); }, env: agentEnv(), ...down }), 1);
+  assert.match(down.lines.err[0], /^Couldn't reach WorldSignals \(getaddrinfo ENOTFOUND\)/);
+});
+
+test("retryWhen reads Retry-After as seconds or as a date", () => {
+  assert.equal(retryWhen("1"), "Try again in 1 second.");
+  assert.equal(retryWhen("90"), "Try again in 90 seconds.");
+  assert.equal(retryWhen("3600"), "Try again in 60 minutes.");
+  assert.equal(retryWhen("36000"), "Try again in 10 hours.");
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  assert.equal(retryWhen("Tue, 27 Oct 2026 12:05:00 GMT", now), "Try again in 5 minutes.");
+  assert.equal(retryWhen(null), "Try again later.");
+  assert.equal(retryWhen("soon"), "Try again later.");
+});
+
+test("request checks what and --source before sending anything", async () => {
+  const none = () => assert.fail("no request");
+  const empty = capture();
+  assert.equal(await run(["request"], { fetch: none, env: agentEnv(), ...empty }), 2);
+  assert.match(empty.lines.err[0], /^ws request needs what you'd like collected, e\.g\. ws request "/);
+  assert.equal(await run(["request", "  "], { fetch: none, env: agentEnv(), ...capture() }), 2);
+  for (const source of ["http://mbr.mt/register", "mbr.mt", "https://", ""]) {
+    const io = capture();
+    assert.equal(await run(["request", "x", "--source", source], { fetch: none, env: agentEnv(), ...io }), 2, source);
+    assert.match(io.lines.err[0], /^--source is the https:\/\/ link/);
+  }
+});
+
+test("feedback sends the kind (problem by default), the message and the CLI's version, and prints the answer", async () => {
+  const answer = { id: "fb_1", status: "received", message: "Thanks: we read every one." };
+  const server = answering(201, answer);
+  const io = capture();
+  assert.equal(await run(["feedback", "watch stops after the laptop sleeps"], { fetch: server.fetch, env: agentEnv(), ...io }), 0);
+  assert.equal(server.calls[0].url, "https://ws.test/api/feedback");
+  assert.equal(server.calls[0].init.method, "POST");
+  assert.equal(server.calls[0].init.headers["x-ws-client"], "cli");
+  assert.equal(server.calls[0].init.headers.authorization, undefined);
+  assert.deepEqual(JSON.parse(server.calls[0].init.body), { kind: "problem", message: "watch stops after the laptop sleeps", context: { client: `cli ${VERSION}` } });
+  assert.deepEqual(io.lines.out, ["Sent (fb_1). Thanks: we read every one."]);
+  for (const kind of ["bug", "idea", "IDEA"]) {
+    assert.equal(await run(["feedback", "z", "--kind", kind], { fetch: server.fetch, env: agentEnv(), ...capture() }), 0);
+    assert.equal(JSON.parse(server.calls.at(-1).init.body).kind, kind.toLowerCase());
+  }
+  const json = capture();
+  assert.equal(await run(["feedback", "z", "--json"], { fetch: server.fetch, env: agentEnv(), tty: { out: true }, ...json }), 0);
+  assert.deepEqual(json.lines.out.map((l) => JSON.parse(l)), [answer]);
+  // Checked before anything is sent.
+  const none = () => assert.fail("no request");
+  const wrong = capture();
+  assert.equal(await run(["feedback", "z", "--kind", "praise"], { fetch: none, env: agentEnv(), ...wrong }), 2);
+  assert.match(wrong.lines.err[0], /^--kind is bug, problem or idea/);
+  const empty = capture();
+  assert.equal(await run(["feedback", "--kind", "bug"], { fetch: none, env: agentEnv(), ...empty }), 2);
+  assert.match(empty.lines.err[0], /^ws feedback needs a message/);
 });

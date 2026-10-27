@@ -9,6 +9,8 @@
 //   node ws.mjs stream [set --type … --country …]   (shows or changes the saved stream)
 //   node ws.mjs events [--type …] [--country ES,FR] [--after <number|time>] [--limit 50] [--json]
 //   node ws.mjs watch [--type …] [--country …] [--exec <program> | --agent claude|codex] [--out <folder>] [--batch]
+//   node ws.mjs request "<what>" [--countries PT,ES] [--use …] [--source <https url>]   (data you'd like collected)
+//   node ws.mjs feedback "<message>" [--kind bug|problem|idea]
 //
 // WS_API overrides the server (default https://worldsignals.dev). Requests are signed with the agent key that
 // signup made; WS_KEY (or --key) sends a named or personal access key from the console instead.
@@ -22,7 +24,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.4.4";
+export const VERSION = "0.5.0";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -134,6 +136,22 @@ Events (signed with the agent key; or send a named or personal access key with -
       --state <file>     where to remember the last event handled (default ~/.config/worldsignals/watch.json);
                          give each watcher its own
       --once             handle what is waiting, then exit: for cron and scheduled jobs
+
+Ask for data, tell us what's wrong (anyone may send these; with an agent key or an access key, they come from
+that account):
+  ${p} request "<what>" [--countries <codes>] [--use <text>] [--source <https link>] [--json] [--key <key>]
+      Ask for data WorldSignals doesn't collect yet. It is recorded, and the answer says how many have asked
+      for the same and which collected event types come closest, e.g.
+        ${p} request "company registrations in Malta" --countries MT --use "supplier checks"
+      --countries <codes> where you'd like it, comma-separated ISO codes, e.g. PT,ES
+      --use <text>        what it's for: helps decide what to collect first
+      --source <link>     where it is published, if you know: an https:// link
+      --json              the answer as one JSON object: {id, status, asked_by, closest: [{type, label,
+                          collected_in, missing}], message}
+
+  ${p} feedback "<message>" [--kind bug|problem|idea] [--json] [--key <key>]
+      Tell WorldSignals about a bug, a problem (the default) or an idea. The CLI's version goes with it.
+      --json              the answer as one JSON object: {id, status, message}
 
 With --json, stdout is JSON only, one object per line, never styled; errors stay plain text on stderr, with a
 non-zero exit.
@@ -375,6 +393,8 @@ export async function run(
   if (command === "status") return statusCommand(rest, ctx);
   if (command === "keys") return keysCommand(rest, ctx);
   if (command === "stream") return streamCommand(rest, ctx);
+  if (command === "request") return requestCommand(rest, ctx);
+  if (command === "feedback") return feedbackCommand(rest, ctx);
 
   if (command === "events") {
     const { values } = parseArgs({
@@ -953,6 +973,130 @@ async function streamCommand(rest, { api, fetch, env, out, err, p }) {
   out(`Countries:   ${countries.length ? countries.join(", ") : "every country"}`);
   if (stream.delivery.length) out(`Delivery:    ${stream.delivery.join(", ")}`);
   if (stream.speed) out(`Speed:       ${stream.speed}`);
+  return 0;
+}
+
+// ws request and ws feedback: POST /api/requests and /api/feedback, which anyone may send. With an access key (--key,
+// WS_KEY) they come from that key's account, else signed with the agent key if this device has one, else anonymously.
+// X-WS-Client says they came from the CLI.
+
+/** When to try again, from a Retry-After header (seconds, or an HTTP date). */
+export function retryWhen(header, now = Date.now()) {
+  let s = header == null || header === "" ? NaN : Number(header);
+  if (!Number.isFinite(s) && header) s = (Date.parse(header) - now) / 1000;
+  if (!Number.isFinite(s)) return "Try again later.";
+  s = Math.max(1, Math.ceil(s));
+  if (s < 120) return `Try again in ${s} second${s === 1 ? "" : "s"}.`;
+  const m = Math.ceil(s / 60);
+  return m < 120 ? `Try again in ${m} minutes.` : `Try again in ${Math.ceil(m / 60)} hours.`;
+}
+
+/** Sends one POST that needs no account, as the device can: access key, agent key or anonymous. Answers
+ * {status, body, retryAfter, auth}, or {error} when WorldSignals couldn't be reached. */
+async function openPost({ api, fetch, env }, values, path, payload) {
+  const auth = credentials(values, env, api);
+  const url = `${api}${path}`;
+  const body = JSON.stringify(payload);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "user-agent": `ws-cli/${VERSION}`, "content-type": "application/json", "x-ws-client": "cli", ...(auth ? auth.headers("POST", url, body) : {}) },
+      body,
+    });
+    return { status: res.status, retryAfter: res.headers?.get?.("retry-after") ?? null, body: await res.json().catch(() => ({})), auth };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/** Says why an openPost didn't go through, on stderr; answers the exit code (1), or null when it did go through. */
+function openPostFailed({ err, p }, command, answer) {
+  if (answer.error) {
+    err(`Couldn't reach WorldSignals (${answer.error}).`);
+    return 1;
+  }
+  const { status, body, auth, retryAfter } = answer;
+  if (status >= 200 && status < 300) return null;
+  if (status === 429) err(`${p} ${command}: ${body.error ?? "Too many at once."} ${retryWhen(retryAfter)}`);
+  else if (status === 400) err(`${p} ${command}: ${body.error ?? "WorldSignals refused it."}`);
+  else err(refused(status, body, auth, p) ?? `Couldn't send it (${status}): ${body.error ?? "no details"}`);
+  return 1;
+}
+
+/** The request body for `ws request`, from what was asked and the parsed options: only what was given. */
+export function requestBody(what, o) {
+  const countries = list(o.countries ?? o.country)?.map((c) => c.toUpperCase());
+  const body = { what, countries: countries?.length ? countries : undefined, use: o.use?.trim() || undefined, source_url: o.source };
+  return Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined));
+}
+
+// ws request: data someone would like collected. The answer says how many asked for the same, and what comes closest.
+async function requestCommand(rest, ctx) {
+  const { out, err, p } = ctx;
+  const str = { type: "string" };
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { countries: str, country: str, use: str, source: str, key: str, json: { type: "boolean" } },
+  });
+  const what = positionals.join(" ").trim();
+  if (!what) {
+    err(`${p} request needs what you'd like collected, e.g. ${p} request "company registrations in Malta" --countries MT`);
+    return 2;
+  }
+  if (values.source !== undefined && !/^https:\/\/[^\s/]+/i.test(values.source)) {
+    err(`--source is the https:// link where the data is published, e.g. --source https://example.gov/register`);
+    return 2;
+  }
+  const answer = await openPost(ctx, values, "/api/requests", requestBody(what, values));
+  const failed = openPostFailed(ctx, "request", answer);
+  if (failed !== null) return failed;
+  const { body } = answer;
+  if (values.json) {
+    out(JSON.stringify(body));
+    return 0;
+  }
+  const look = ctx.style.out;
+  out(`${look.label("Recorded:")} ${what.replace(/\.+$/, "")}.`);
+  const n = Number(body.asked_by);
+  if (Number.isFinite(n) && n > 0) out(`${n} ${n === 1 ? "person" : "people"} asked for this.`);
+  const closest = Array.isArray(body.closest) ? body.closest : [];
+  if (closest.length) {
+    out("Closest collected today:");
+    for (const c of closest) {
+      const where = [c.collected_in?.length ? `in ${c.collected_in.join(", ")}` : "", c.missing?.length ? `not yet in ${c.missing.join(", ")}` : ""].filter(Boolean).join("; ");
+      out(`  ${look.strong(c.label ?? c.type)} (${c.type})${where ? `: ${where}` : ""}`);
+    }
+  }
+  if (body.message) out(body.message);
+  return 0;
+}
+
+const FEEDBACK_KINDS = ["bug", "problem", "idea"];
+
+// ws feedback: a bug, a problem or an idea, with the CLI's version.
+async function feedbackCommand(rest, ctx) {
+  const { out, err, p } = ctx;
+  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { kind: { type: "string" }, key: { type: "string" }, json: { type: "boolean" } } });
+  const message = positionals.join(" ").trim();
+  const kind = (values.kind ?? "problem").toLowerCase();
+  if (!FEEDBACK_KINDS.includes(kind)) {
+    err(`--kind is bug, problem or idea (default: problem), e.g. ${p} feedback "watch stops after the laptop sleeps" --kind bug`);
+    return 2;
+  }
+  if (!message) {
+    err(`${p} feedback needs a message, e.g. ${p} feedback "watch stops after the laptop sleeps" --kind bug`);
+    return 2;
+  }
+  const answer = await openPost(ctx, values, "/api/feedback", { kind, message, context: { client: `cli ${VERSION}` } });
+  const failed = openPostFailed(ctx, "feedback", answer);
+  if (failed !== null) return failed;
+  const { body } = answer;
+  if (values.json) {
+    out(JSON.stringify(body));
+    return 0;
+  }
+  out(`${ctx.style.out.label("Sent")}${body.id ? ` (${body.id})` : ""}.${body.message ? ` ${body.message}` : ""}`);
   return 0;
 }
 

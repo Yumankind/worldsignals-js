@@ -153,6 +153,8 @@ command.
 | `stream`, `stream set` | Show or change the saved stream: the types and countries `watch` uses by default |
 | `events` | Read stored events (`--type`, `--country`, `--after`, `--limit 1-200`, `--json`) |
 | `watch` | Stay connected and handle each new event as it arrives |
+| `request` | Ask for data that isn't collected yet (`--countries`, `--use`, `--source`, `--json`) |
+| `feedback` | Tell us about a bug, a problem or an idea (`--kind bug\|problem\|idea`, `--json`) |
 
 `npx worldsignals help` has every option. `WS_API` points the tool at another server, for testing.
 
@@ -214,6 +216,29 @@ agent finishes. For AI agents, use `--batch` or `--out`: one run that sees relat
 decides better than a run per event ([delivery modes](https://worldsignals.dev/docs#delivery-modes)). Each plan
 keeps a number of live connections open at once (Free 1, Developer 5, Team 25, Business 100); past that, `watch`
 says so, waits as long as the server asks and connects again.
+
+## Ask for data, tell us what's wrong
+
+Anyone can send these, with no account. With an agent key or an access key, they come from that account.
+
+```sh
+npx worldsignals request "company registrations in Malta" --countries MT --use "supplier checks"
+npx worldsignals feedback "watch stops after the laptop sleeps" --kind bug
+```
+
+`request` records what you'd like collected (`--source https://…` says where it's published, if you know) and
+answers how many have asked for the same and which collected types come closest:
+
+```
+Recorded: company registrations in Malta.
+3 people asked for this.
+Closest collected today:
+  New companies (company.registered): in PT, ES, FR; not yet in MT
+```
+
+`feedback` is a `problem` unless `--kind` says `bug` or `idea`, and sends the CLI's version with it. With `--json`,
+both print the answer as one JSON object: `{id, status, asked_by, closest, message}` for a request,
+`{id, status, message}` for feedback.
 
 ## Safety
 
