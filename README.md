@@ -255,6 +255,10 @@ so after a restart, a sleeping laptop or a dropped network it carries on from th
 read each time it connects: a change in the console reaches it within about five minutes, or at once if you restart it.
 `--type all` is every type.
 
+WorldSignals' own notices (a new CLI version, maintenance, deprecations) come as one line on stderr, each once:
+never on stdout and never to `--exec` or `--agent`, so whatever reads the events never meets them. A newer version is
+mentioned at most once a day.
+
 ```sh
 # the saved stream, one JSON event per line
 npx worldsignals watch

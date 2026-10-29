@@ -14,6 +14,11 @@
 //   node ws.mjs feedback "<message>" [--kind bug|problem|idea]
 //   node ws.mjs api <METHOD> /api/<path> [<json>|@file|-]   (any API call, signed as the commands above sign)
 //
+// WorldSignals' own notices (a new CLI version, deprecations, maintenance) are printed as one line on stderr, never
+// on stdout and never to a program or agent: the stream's `event: notice`, and the X-WS-CLI-Latest and X-WS-Notice
+// headers every answer carries. The update line comes at most once a day; ~/.config/worldsignals/notices.json
+// remembers it and the notices already shown (best-effort: a folder it can't write only means they may repeat).
+//
 // WS_API overrides the server (default https://worldsignals.dev). Requests are signed with the agent key that
 // signup made; WS_KEY (or --key) sends a named or personal access key from the console instead.
 import { spawn as nodeSpawn } from "node:child_process";
@@ -26,7 +31,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.5.1";
+export const VERSION = "0.5.2";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -230,6 +235,119 @@ Environment:
   WS_API   server to talk to (default ${DEFAULT_API})
   WS_KEY   a named or personal access key from your console, sent instead of the agent key
 `;
+
+// ---- Notices and the update check ----
+
+const NOTICES_FILE = "notices.json";
+const DAY_MS = 86_400_000;
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/;
+
+/** Whether version `a` is newer than `b` (semver: numbers first, then a release over its prereleases). */
+export function newerVersion(a, b) {
+  const x = SEMVER.exec(String(a));
+  const y = SEMVER.exec(String(b));
+  if (!x || !y) return false;
+  for (let i = 1; i <= 3; i++) {
+    const d = Number(x[i]) - Number(y[i]);
+    if (d) return d > 0;
+  }
+  if (!x[4] && y[4]) return true;
+  if (x[4] && !y[4]) return false;
+  return (x[4] ?? "") > (y[4] ?? "");
+}
+
+/** The line a notice event is printed as: "WorldSignals: <title> — <url>". */
+export function noticeLine(e) {
+  const d = (e && typeof e.data === "object" && e.data) || {};
+  const url = [d.url, d.notes_url, e?.provenance?.url].find((v) => typeof v === "string" && v.startsWith("https://"));
+  // Titles come from the server; control characters are dropped so a line can't move the terminal's cursor.
+  const clean = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim();
+  return `WorldSignals: ${clean(e?.title ?? "a notice")}${url ? ` — ${clean(url)}` : ""}`;
+}
+
+/**
+ * What prints notices and the update line, to stderr only, each at most once: the notices already shown and when the
+ * update line was last said are kept in notices.json (best-effort). `quiet` (--json) keeps the header-borne lines out.
+ */
+function noticeBoard({ env, err, now = () => Date.now() }, { quiet = false } = {}) {
+  const path = join(configDir(env), NOTICES_FILE);
+  let state;
+  const read = () => {
+    if (state) return state;
+    try {
+      const s = JSON.parse(readFileSync(path, "utf8"));
+      state = { shown: Array.isArray(s.shown) ? s.shown.filter((x) => typeof x === "string").slice(-50) : [], update: s.update && typeof s.update === "object" ? s.update : null };
+    } catch {
+      state = { shown: [], update: null };
+    }
+    return state;
+  };
+  const write = () => {
+    try {
+      writeWhole(path, `${JSON.stringify(state)}\n`);
+    } catch {}
+  };
+  let updateSaid = false;
+  return {
+    /** A notice from the stream (event: notice) or a header: printed once per id. */
+    notice(event, { fromHeader = false } = {}) {
+      if (fromHeader && quiet) return;
+      const id = typeof event?.id === "string" ? event.id : null;
+      const s = read();
+      if (id && s.shown.includes(id)) return;
+      err(noticeLine(event));
+      if (id) {
+        s.shown = [...s.shown, id].slice(-50);
+        write();
+      }
+    },
+    /** The newest CLI version the server knows: when newer than this one, says so at most once a day. */
+    latest(version) {
+      if (quiet || updateSaid || typeof version !== "string" || !newerVersion(version, VERSION)) return;
+      updateSaid = true;
+      const s = read();
+      const last = Date.parse(s.update?.told_at ?? "");
+      if (Number.isFinite(last) && now() - last < DAY_MS && now() >= last) return;
+      err(`worldsignals ${version} is out (you have ${VERSION}): npx worldsignals@latest, or npm i -g worldsignals`);
+      s.update = { version, told_at: new Date(now()).toISOString() };
+      write();
+    },
+  };
+}
+
+/** X-WS-Notice: `evt_…; title="…"; url="…"`, percent-encoded where it isn't plain ASCII. */
+export function parseNoticeHeader(value) {
+  const id = /^(evt_[0-9A-Za-z]+)/.exec(value ?? "")?.[1];
+  if (!id) return null;
+  const field = (name) => {
+    const m = new RegExp(`${name}="([^"]*)"`).exec(value);
+    if (!m) return undefined;
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return m[1];
+    }
+  };
+  const url = field("url");
+  return { id, title: field("title") ?? "a notice", ...(url ? { data: { url } } : {}) };
+}
+
+/** A fetch that hands each answer's notice headers to the board before returning it unchanged. */
+function noticingFetch(fetch, board) {
+  return async (...args) => {
+    const res = await fetch(...args);
+    try {
+      const h = res?.headers;
+      if (h && typeof h.get === "function") {
+        const latest = h.get("x-ws-cli-latest");
+        if (latest) board.latest(latest);
+        const notice = parseNoticeHeader(h.get("x-ws-notice"));
+        if (notice) board.notice(notice, { fromHeader: true });
+      }
+    } catch {}
+    return res;
+  };
+}
 
 /** Options that narrow events beyond type and country; the same for ws events and ws watch. */
 const FILTER_OPTIONS = { tag: { type: "string" }, platform: { type: "string" }, ecosystem: { type: "string" }, language: { type: "string" }, where: { type: "string", multiple: true } };
@@ -533,7 +651,10 @@ export async function run(
   }
 
   const style = { out: looks(tty.out, env), err: looks(tty.err, env) };
-  const ctx = { api, fetch, env, out, err, spawn, signal, pause, p, platform, style, stdin, readStdin };
+  // Notices and the update check (noticeBoard): stderr only, and quiet about headers under --json.
+  const board = noticeBoard({ env, err }, { quiet: rest.includes("--json") });
+  fetch = noticingFetch(fetch, board);
+  const ctx = { api, fetch, env, out, err, spawn, signal, pause, p, platform, style, stdin, readStdin, board };
   // init, pay and portal are the earlier names of signup, upgrade and billing, kept working.
   if (command === "signup" || command === "init") return initCommand(rest, ctx);
   if (command === "recover") return initCommand(rest, ctx, { recover: true });
@@ -2022,7 +2143,7 @@ async function waitReady({ env, api, err, p, pause, signal }, agent, me, ok) {
   }
 }
 
-async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause, platform, style, stdin }) {
+async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause, platform, style, stdin, board }) {
   const str = { type: "string" };
   const { values, positionals } = parseArgs({
     args: rest,
@@ -2193,6 +2314,13 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause,
             if (!announced) err(`Watching for new events after number ${after}${r.types?.length ? ` (${r.types.join(", ")})` : ""}. Ctrl+C stops.`);
             if (!announced && r.hint) err(`Note: ${r.hint}`);
             announced = true;
+            if (r.cli_latest) board?.latest(r.cli_latest);
+          } else if (m.event === "notice") {
+            // WorldSignals' own notice: one line on stderr. Never on stdout, never to --exec or --agent, and it has no
+            // id, so it never moves the place saved.
+            try {
+              board?.notice(JSON.parse(m.data));
+            } catch {}
           } else if (m.event === "gap") {
             const g = JSON.parse(m.data);
             err(`Events stored between numbers ${g.after} and ${g.oldest} are past the 30 days kept; any you wanted from then were missed.`);

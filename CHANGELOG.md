@@ -3,6 +3,14 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## 0.5.2 (2026-10-29)
+
+- New: WorldSignals' own notices (a new CLI version, maintenance, deprecations) print as one line on stderr, each once:
+  the live stream's `event: notice` in `watch`, and the `X-WS-CLI-Latest` and `X-WS-Notice` headers every answer
+  carries. Never on stdout, never to `--exec` or `--agent`, and they never move `watch`'s saved place. A newer version
+  is said at most once a day, and `--json` leaves the header-borne lines out. `~/.config/worldsignals/notices.json`
+  remembers what was shown. (Until now only the copy served at worldsignals.dev/cli/ws.mjs had this.)
+
 ## 0.5.1 (2026-10-29)
 
 - New: `disconnect` (also `logout`) starts from scratch: a connected agent leaves the account it acts for (as a

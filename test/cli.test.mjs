@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { VERSION, agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, retryWhen, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
+import { VERSION, newerVersion, noticeLine, parseNoticeHeader, agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, retryWhen, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
 
 // Never a real browser from a test: commands that open a link (upgrade, billing, connect) get a spawn that does
 // nothing and a platform with no browser, unless the test brings its own to check that it opens.
@@ -1425,4 +1425,70 @@ test("events pages back while the answer says older events may match, and says h
   assert.equal(await run(["events", "--after", "900", "--where", "title*=a"], { fetch: poll.fetch, env: { WS_KEY: "k" }, ...capture() }), 0);
   assert.equal(poll.asked.length, 1);
   assert.equal(await run(["events", "--pages", "0"], { fetch: () => assert.fail("no request"), env: { WS_KEY: "k" }, ...capture() }), 2);
+});
+
+test("newerVersion compares semver: numbers first, then a release over its prereleases", () => {
+  assert.equal(newerVersion("0.5.2", "0.5.1"), true);
+  assert.equal(newerVersion("0.10.0", "0.9.9"), true);
+  assert.equal(newerVersion("0.5.1", "0.5.1"), false);
+  assert.equal(newerVersion("0.5.1", "0.5.1-rc.1"), true);
+  assert.equal(newerVersion("0.5.1-rc.1", "0.5.1"), false);
+  assert.equal(newerVersion("nonsense", "0.5.1"), false);
+  assert.deepEqual(parseNoticeHeader('evt_N2; title="Deprecated %E2%80%94 after"; url="https://worldsignals.dev/docs"'), { id: "evt_N2", title: "Deprecated — after", data: { url: "https://worldsignals.dev/docs" } });
+  assert.equal(parseNoticeHeader("nothing here"), null);
+  // A notice's title can't move the terminal's cursor.
+  assert.equal(noticeLine({ title: "Hi\u001b[2J", data: { url: "https://x.test/a" } }), "WorldSignals: Hi [2J — https://x.test/a");
+});
+
+test("watch prints WorldSignals notices on stderr only: never on stdout, never to --exec, never moving the cursor", async () => {
+  const { readFileSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "ws-cli-"));
+  const state = join(dir, "watch.json");
+  const notice = { id: "evt_N1", type: "worldsignals.maintenance_scheduled", title: "Maintenance on Monday\u001b[2J", data: { url: "https://worldsignals.dev/status" } };
+  const body = `event: ready\ndata: {"after":4,"head":5,"cli_latest":"99.0.0"}\n\nevent: notice\ndata: ${JSON.stringify(notice)}\n\nid: 5\ndata: {"id":"evt_5","type":"company.registered"}\n\n: hb\n\n`;
+  const fetch = async () => new Response(body, { headers: { "content-type": "text/event-stream" } });
+  const env = { WS_KEY: "wsk_test", XDG_CONFIG_HOME: dir };
+  const io = capture();
+  assert.equal(await run(["watch", "--once", "--state", state], { fetch, env, ...io }), 0);
+  assert.deepEqual(io.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
+  assert.ok(io.lines.err.includes("WorldSignals: Maintenance on Monday [2J — https://worldsignals.dev/status"));
+  assert.ok(io.lines.err.includes(`worldsignals 99.0.0 is out (you have ${VERSION}): npx worldsignals@latest, or npm i -g worldsignals`));
+  assert.equal(JSON.parse(readFileSync(state, "utf8")).after, 5);
+
+  // The next run (or a reconnect that sends the notice again): neither line is repeated, at most once a day.
+  const again = capture();
+  assert.equal(await run(["watch", "--once", "--state", state], { fetch, env, ...again }), 0);
+  assert.deepEqual(again.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
+  assert.equal(again.lines.err.filter((l) => l.startsWith("WorldSignals:") || l.startsWith("worldsignals 99")).length, 0);
+
+  // --exec never gets a notice: only the event.
+  const spawned = [];
+  const spawn = () => ({ stdin: { end: (input) => spawned.push(input), on: () => {} }, on: (ev, cb) => ev === "close" && setTimeout(() => cb(0), 0), kill: () => {} });
+  assert.equal(await run(["watch", "--once", "--from", "4", "--state", join(dir, "w2.json"), "--exec", "./handle"], { fetch, env: { ...env, XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "ws-cli-")) }, spawn, ...capture() }), 0);
+  assert.deepEqual(spawned, ['{"id":"evt_5","type":"company.registered"}\n']);
+});
+
+test("events says a newer CLI version once a day on stderr, from the server's header, and stays quiet under --json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ws-cli-"));
+  const events = [{ time: "2026-10-23T00:00:00Z", type: "company.registered", country: "ES", title: "X SL" }];
+  const fetch = async () =>
+    new Response(JSON.stringify({ events, cursor: 9 }), {
+      headers: { "content-type": "application/json", "x-ws-cli-latest": "99.0.0", "x-ws-notice": 'evt_N2; title="Deprecated %E2%80%94 after=<time>"; url="https://worldsignals.dev/docs#api"' },
+    });
+  const env = { WS_KEY: "wsk_test", XDG_CONFIG_HOME: dir };
+  const quiet = capture();
+  assert.equal(await run(["events", "--json"], { fetch, env, ...quiet }), 0);
+  assert.deepEqual(quiet.lines.err, []);
+
+  const io = capture();
+  assert.equal(await run(["events"], { fetch, env, ...io }), 0);
+  assert.deepEqual(io.lines.err, [`worldsignals 99.0.0 is out (you have ${VERSION}): npx worldsignals@latest, or npm i -g worldsignals`, "WorldSignals: Deprecated — after=<time> — https://worldsignals.dev/docs#api"]);
+  const later = capture();
+  assert.equal(await run(["events"], { fetch, env, ...later }), 0);
+  assert.deepEqual(later.lines.err, []);
+  // The same version as this one: nothing to say.
+  const current = async () => new Response(JSON.stringify({ events: [], cursor: 9 }), { headers: { "x-ws-cli-latest": VERSION } });
+  const none = capture();
+  assert.equal(await run(["events"], { fetch: current, env: { ...env, XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "ws-cli-")) }, ...none }), 0);
+  assert.deepEqual(none.lines.err.filter((l) => l.startsWith("worldsignals ")), []);
 });
