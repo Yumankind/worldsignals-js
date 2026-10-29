@@ -61,7 +61,7 @@ test("messages name the command as it was run", async () => {
   assert.match(io.lines.err[0], /npx worldsignals upgrade .*npx worldsignals connect/);
   assert.doesNotMatch(io.lines.err[0], /(^|[^x] )ws /);
   const text = help("npx worldsignals");
-  for (const c of ["signup", "upgrade", "connect", "status", "billing", "keys rotate", "recover", "stream preview", "events", "watch", "types", "fields", "estimate", "api", "request", "feedback"]) assert.match(text, new RegExp(`^ {2}npx worldsignals ${c}`, "m"));
+  for (const c of ["signup", "upgrade", "connect", "status", "billing", "keys rotate", "disconnect", "recover", "stream preview", "events", "watch", "types", "fields", "estimate", "api", "request", "feedback"]) assert.match(text, new RegExp(`^ {2}npx worldsignals ${c}`, "m"));
   assert.doesNotMatch(text, /^ {2}ws /m);
   // The earlier names still work, but help shows only the new ones.
   assert.doesNotMatch(text, /worldsignals (init|pay|portal)\b|--link/);
@@ -418,6 +418,98 @@ test("status shows the agent from /api/agent/me", async () => {
   const none = capture();
   assert.equal(await run(["status"], { fetch: () => assert.fail("no request"), env: agentEnv(), ...none }), 2);
   assert.match(none.lines.err[0], /ws signup/);
+});
+
+test("disconnect leaves the account it is connected to, then forgets the key and the watch position", async () => {
+  const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+  let connected = true;
+  const server = await agentServer({
+    ...INIT,
+    "GET /api/agent/me": () => [200, connected ? { agent_id: "agt_1", status: "connected", plan: null, connected_to: { account_label: "Acme", plan: "team" } } : { agent_id: "agt_1", status: "unpaid", plan: null }],
+    "POST /api/agent/disconnect": () => {
+      const was = connected;
+      connected = false;
+      return [200, { ok: true, agent_id: "agt_1", disconnected: was, status: "unpaid" }];
+    },
+  });
+  // The real server, so watch.json is this agent's place.
+  const env = { XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "ws-agent-")) };
+  assert.equal(await run(["signup"], { fetch: server.fetch, env, ...capture() }), 0);
+  server.calls.length = 0;
+  const watched = join(env.XDG_CONFIG_HOME, "worldsignals", "watch.json");
+  mkdirSync(join(env.XDG_CONFIG_HOME, "worldsignals"), { recursive: true });
+  writeFileSync(watched, '{"after": 7}\n');
+  const io = capture();
+  assert.equal(await run(["disconnect"], { fetch: server.fetch, env, ...io }), 0);
+  assert.deepEqual(server.calls.map((c) => `${c.method} ${c.path} ${c.signed}`), ["GET /api/agent/me true", "POST /api/agent/disconnect true"]);
+  assert.equal(io.lines.out[0], "Disconnected agt_1 from Acme.");
+  assert.match(io.lines.out[1], /^Forgot this device's agent key \(agt_1\) and where ws watch stopped\. ws signup or ws watch starts from scratch\.$/);
+  assert.equal(readAgent(env, "https://worldsignals.dev"), null);
+  assert.equal(existsSync(watched), false);
+  // Nothing left: says so, and asks nothing.
+  const again = capture();
+  assert.equal(await run(["disconnect"], { fetch: () => assert.fail("no request"), env, ...again }), 0);
+  assert.match(again.lines.out[0], /no agent key: nothing to disconnect/);
+});
+
+test("disconnect keeps watch.json when WS_KEY is set, and says to unset it", async () => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { env, server } = await withAgent({
+    "GET /api/agent/me": () => [200, { agent_id: "agt_1", status: "unpaid", plan: null }],
+    "POST /api/agent/disconnect": () => [200, { ok: true, agent_id: "agt_1", disconnected: false, status: "unpaid" }],
+  });
+  const watched = join(env.XDG_CONFIG_HOME, "worldsignals", "watch.json");
+  writeFileSync(watched, '{"after": 7}\n');
+  const io = capture();
+  assert.equal(await run(["disconnect"], { fetch: server.fetch, env: { ...env, WS_KEY: "wsk_test" }, ...io }), 0);
+  // Not connected: nothing to say about leaving.
+  assert.match(io.lines.out[0], /^Forgot this device's agent key \(agt_1\)\. /);
+  assert.match(io.lines.err[0], /WS_KEY is still set.*unset WS_KEY/);
+  assert.equal(readAgent(env, "https://ws.test"), null);
+  assert.ok(existsSync(watched), "that watch's place, not this agent's");
+});
+
+test("disconnect won't forget an agent with a live plan of its own, or one it can't reach, without --force", async () => {
+  for (const me of [
+    { agent_id: "agt_1", status: "paid", plan: "developer", paid_until: "2026-11-26T00:00:00Z", paid_status: "active" },
+    // Past its paid_until but Stripe still counts it live: a renewal that hasn't reached the server.
+    { agent_id: "agt_1", status: "unpaid", plan: null, paid_until: "2026-10-01T00:00:00Z", paid_status: "past_due" },
+  ]) {
+    const { env, server } = await withAgent({ "GET /api/agent/me": () => [200, me] });
+    const io = capture();
+    assert.equal(await run(["disconnect"], { fetch: server.fetch, env, ...io }), 1);
+    assert.match(io.lines.err[0], /has its own .*plan.*cancel it with ws billing and run ws disconnect once the period ends.*--force/);
+    assert.ok(readAgent(env, "https://ws.test"), "the key stays");
+    // --force: forgotten, even though this server has no disconnect route (an agent that isn't connected has nothing to leave).
+    assert.equal(await run(["disconnect", "--force"], { fetch: server.fetch, env, ...capture() }), 0);
+    assert.equal(readAgent(env, "https://ws.test"), null);
+  }
+
+  const down = await withAgent({});
+  const offline = async () => { throw new Error("getaddrinfo ENOTFOUND ws.test"); };
+  const io2 = capture();
+  assert.equal(await run(["disconnect"], { fetch: offline, env: down.env, ...io2 }), 1);
+  assert.match(io2.lines.err[0], /no answer.*Nothing changed.*--force/);
+  assert.ok(readAgent(down.env, "https://ws.test"));
+  assert.equal(await run(["disconnect", "--force"], { fetch: offline, env: down.env, ...capture() }), 0);
+  assert.equal(readAgent(down.env, "https://ws.test"), null);
+});
+
+test("disconnect stops when a connected agent can't leave", async () => {
+  const { env, server } = await withAgent({
+    "GET /api/agent/me": () => [200, { agent_id: "agt_1", status: "connected", connected_to: { account_label: "Acme" } }],
+    "POST /api/agent/disconnect": () => [503, { error: "Try again." }],
+  });
+  const io = capture();
+  assert.equal(await run(["disconnect"], { fetch: server.fetch, env, ...io }), 1);
+  assert.match(io.lines.err[0], /Couldn't disconnect agt_1 \(503\): Try again\. Nothing changed\./);
+  assert.ok(readAgent(env, "https://ws.test"));
+});
+
+test("disconnect forgets an agent the server already deleted", async () => {
+  const { env, server } = await withAgent({ "GET /api/agent/me": () => [401, { error: "No such agent.", reason: "agent" }] });
+  assert.equal(await run(["disconnect"], { fetch: server.fetch, env, ...capture() }), 0);
+  assert.equal(readAgent(env, "https://ws.test"), null);
 });
 
 test("keys rotate sends a new public key, signed by the old key and the new one, and then signs with the new key", async () => {

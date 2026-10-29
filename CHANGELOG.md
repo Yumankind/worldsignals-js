@@ -3,6 +3,18 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## Unreleased
+
+- New: `disconnect` (also `logout`) starts from scratch: a connected agent leaves the account it acts for (as a
+  revoke in the console would, `POST /api/agent/disconnect`), then this device forgets the agent key and where
+  `watch` stopped, so the next `signup` or `watch` makes a new agent. An agent with a live plan of its own is refused
+  until that plan ends (cancel it with `billing`; `--force` forgets the key anyway; `recover` binds a new one). With
+  `WS_KEY` set (or `WS_API` elsewhere) the watch position is kept, as it may be another watch's, and it says to unset
+  `WS_KEY`, as it isn't the CLI's to forget. Needs the server's `POST /api/agent/disconnect`.
+- `watch --type` help says `all` is every type.
+- Help and README say when a saved-stream change reaches a running `watch` (its next reconnect, within about five
+  minutes) and that `events` doesn't use the saved stream.
+
 ## 0.5.0 (2026-10-27)
 
 - New: `request "<what>"` asks for data WorldSignals doesn't collect yet (`--countries`, `--use`, `--source` with an

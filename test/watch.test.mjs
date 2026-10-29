@@ -242,7 +242,8 @@ test("checks its options before connecting", async () => {
   const no = () => assert.fail("no request");
   const cases = [
     // With no key, watch signs the agent up (test/cli.test.mjs); --no-signup keeps the old answer.
-    [["--no-signup"], {}, /needs an agent key on this device, or an access key/],
+    // Its own empty config folder: never this machine's ~/.config, which may hold a key.
+    [["--no-signup"], { XDG_CONFIG_HOME: tmp() }, /needs an agent key on this device, or an access key/],
     [["--exec", "a", "--agent", "claude"], env, /not both/],
     [["--agent", "gpt"], env, /claude or codex/],
     [["--prompt", "x"], env, /for --agent/],

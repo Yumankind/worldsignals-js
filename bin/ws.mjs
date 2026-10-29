@@ -18,7 +18,7 @@
 // signup made; WS_KEY (or --key) sends a named or personal access key from the console instead.
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline";
@@ -77,6 +77,13 @@ Your agent:
       plan or the card, see invoices, cancel.
   ${p} keys rotate
       Replace the agent key with a new one made on this device; the old one stops working.
+  ${p} disconnect [--force]
+      Start from scratch: leave the account the agent is connected to (as if the person revoked it in
+      their console), then forget this device's agent key and where ${p} watch stopped (kept with WS_KEY set
+      or WS_API elsewhere). The next ${p} signup or ${p} watch makes a new agent. An agent with its own plan
+      is refused until that plan ends (cancel it with ${p} billing), as it would go on with no key to use it.
+      --force            forget the key here anyway: when the plan should stay, or WorldSignals can't be
+                         reached (${p} recover binds a new key to the agent later)
   ${p} recover [--name <name>] [--label <label>] [--email <email>]
       Lost the key, or a new device? Make a new key and bind it to your existing agent: prints a code
       that the person the agent is connected to (or who paid for it) approves, signed in.
@@ -87,7 +94,8 @@ Events (signed with the agent key; or send a named or personal access key with -
       no --type or --country.
   ${p} stream set [--type <ids>] [--country <codes>] [--match <match>]… [--matches <json|@file|->]
                  [--delivery <ids>] [--speed <speed>] [--key <key>]
-      Change it, at once. What you leave out stays as it is. --country all is every country; add XX
+      Change it, at once; a running ${p} watch takes it at its next reconnect, within about five minutes
+      (restart it to have it now). What you leave out stays as it is. --country all is every country; add XX
       for the events about the whole world: PT,ES,XX; EU, EEA or EUROPE for a group. --speed is realtime,
       hourly or daily. Unknown types or countries are refused, naming them.
       --match <type>:<condition>[;<condition>…]
@@ -110,7 +118,8 @@ Events (signed with the agent key; or send a named or personal access key with -
 
   ${p} events [--type <ids>] [--country <codes>] [--after <number|time>] [--before <number>] [--limit <1-200>]
               [--pages <n>] [--json] [--key <key>]
-      Print collected public events, newest first.
+      Print collected public events, newest first. It doesn't use the saved stream: without --type or
+      --country, every type and country.
       --country <codes> one ISO code or several, comma-separated, e.g. FR,ES; add XX for the events
                         about the whole world (vulnerabilities, outages, AI models): FR,ES,XX;
                         EU, EEA or EUROPE for a group
@@ -147,7 +156,7 @@ Events (signed with the agent key; or send a named or personal access key with -
                          expires_at}, next}. With --no-wait it is the only thing on stdout; while waiting it
                          is a line of its own on stderr, as stdout is the events' alone
       --no-signup        never sign up: without a key, say how to get one and exit
-      --type <ids>       event types (default: the saved stream's)
+      --type <ids>       event types, or all for every type (default: the saved stream's)
       --country <codes>  ISO codes; XX is the events about the whole world; EU, EEA or EUROPE for a group
                          (default: the saved stream's)
       --platform, --ecosystem, --language, --tag, --where   the filters above
@@ -347,6 +356,8 @@ export async function matchesOption(values, readStdin = () => Promise.resolve(""
 const configDir = (env) => join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config"), "worldsignals");
 /** Where the agent key is kept. */
 export const agentPath = (env = {}) => join(configDir(env), "agent.json");
+/** Where ws watch remembers the last event handled, unless --state says elsewhere. */
+const watchPath = (env) => join(configDir(env), "watch.json");
 
 function readAgents(path) {
   try {
@@ -531,6 +542,7 @@ export async function run(
   if (command === "connect") return connectCommand(rest, ctx);
   if (command === "status") return statusCommand(rest, ctx);
   if (command === "keys") return keysCommand(rest, ctx);
+  if (command === "disconnect" || command === "logout") return disconnectCommand(rest, ctx);
   if (command === "stream") return rest[0] === "preview" ? streamPreview(rest.slice(1), ctx) : streamCommand(rest, ctx);
   if (command === "request") return requestCommand(rest, ctx);
   if (command === "feedback") return feedbackCommand(rest, ctx);
@@ -1086,6 +1098,65 @@ async function statusCommand(rest, ctx) {
   if (waiting) {
     out(`Waiting: a connect code, ${agent.connect.user_code}; ${p} connect keeps waiting for it.`);
   }
+  return 0;
+}
+
+// ws disconnect: POST /api/agent/disconnect when connected, then this device forgets the agent key and the watch
+// position, so the next ws signup or ws watch starts from scratch. The account on the server, unpaid and unconnected,
+// is deleted seven days later, as any such agent is.
+async function disconnectCommand(rest, ctx) {
+  const { env, api, out, err, p } = ctx;
+  const { values } = parseArgs({ args: rest, options: { force: { type: "boolean" } } });
+  const agent = readAgent(env, api);
+  // An access key in the environment isn't this device's to forget: only the shell that set it can.
+  const keyNote = () => env.WS_KEY && err(`WS_KEY is still set, so commands keep sending that access key: unset WS_KEY to stop (revoke it on your Account page if it should stop working).`);
+  // watch.json isn't kept per key or server: with WS_KEY set, or another server, it may be another watch's place.
+  const ownsWatch = !env.WS_KEY && api === DEFAULT_API;
+  /** The server's error as part of a sentence: without its own full stop. */
+  const said = (body) => (body.error ?? "no details").replace(/\.$/, "");
+  const forget = () => {
+    saveAgent(env, api, null);
+    if (ownsWatch) rmSync(watchPath(env), { force: true });
+  };
+  if (!agent?.agent_id || !agent.private_key) {
+    if (agent) forget(); // a recovery still waiting for approval
+    out(agent ? `Forgot the key waiting for approval on this device.` : `This device has no agent key: nothing to disconnect.`);
+    keyNote();
+    return 0;
+  }
+  const me = await agentCall(ctx, agent.private_key, agent.agent_id, "GET", "/api/agent/me").catch((e) => ({ status: 0, body: { error: e.message } }));
+  const gone = isGone(me.status, me.body);
+  if (me.status !== 200 && !gone && !values.force) {
+    err(`Couldn't reach the agent ${agent.agent_id} (${me.status || "no answer"}): ${said(me.body)}. Nothing changed. ${p} disconnect --force forgets the key here anyway; the person it is connected to can revoke it in their console.`);
+    return 1;
+  }
+  // A subscription Stripe still counts as live (cancelled ones too, until the period paid ends; late renewals) keeps
+  // the agent, so its key stays until then.
+  const paying = me.body.plan || ["active", "trialing", "past_due"].includes(me.body.paid_status);
+  if (me.status === 200 && paying && !values.force) {
+    err(
+      `${agent.agent_id} has its own ${me.body.plan ? `${planName(me.body.plan)} ` : ""}plan${me.body.paid_until ? `, paid until ${day(me.body.paid_until)}` : ""}. Forgetting its key now would leave that plan with no key to use it: ` +
+        `cancel it with ${p} billing and run ${p} disconnect once the period ends, or ${p} disconnect --force forgets the key anyway (${p} recover binds a new one later).`,
+    );
+    return 1;
+  }
+  // Leaving is asked whenever the agent is there, not only when it says connected: an account that is no longer
+  // approved still holds the link, which nothing else would clear. Not connected, the server changes nothing.
+  if (me.status === 200) {
+    const left = await agentCall(ctx, agent.private_key, agent.agent_id, "POST", "/api/agent/disconnect").catch((e) => ({ status: 0, body: { error: e.message } }));
+    // Only a connection is worth stopping for: an agent that isn't connected has nothing to leave.
+    if (left.status !== 200 && me.body.status === "connected" && !values.force) {
+      err(`Couldn't disconnect ${agent.agent_id} (${left.status || "no answer"}): ${said(left.body)}. Nothing changed.`);
+      return 1;
+    }
+    if (left.status === 200 && left.body.disconnected) {
+      const to = typeof me.body.connected_to === "object" && me.body.connected_to ? me.body.connected_to.account_label : me.body.connected_to;
+      out(`Disconnected ${agent.agent_id} from ${to ?? "the account it was connected to"}.`);
+    }
+  }
+  forget();
+  out(`Forgot this device's agent key (${agent.agent_id})${ownsWatch ? ` and where ${p} watch stopped` : ""}. ${p} signup or ${p} watch starts from scratch.`);
+  keyNote();
   return 0;
 }
 
@@ -1995,7 +2066,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause,
     auth = credentials(values, env, api);
   }
 
-  const statePath = values.state ?? join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config"), "worldsignals", "watch.json");
+  const statePath = values.state ?? watchPath(env);
   const save = (after) => writeWhole(statePath, `${JSON.stringify({ after, saved_at: new Date().toISOString() })}\n`);
   const command = values.exec ? [values.exec, positionals] : values.agent ? AGENTS[values.agent](positionals) : null;
   let task = values.prompt ?? DEFAULT_TASK;

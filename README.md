@@ -150,12 +150,12 @@ command.
 | `billing` | Stripe's billing portal for an agent that pays for its own plan: change plan or card, invoices, cancel |
 | `keys rotate` | A new key for this agent; the old one stops working |
 | `recover` | A new key for an agent whose key was lost, approved by the person who pays for it or connected it |
-| `stream`, `stream set` | Show or change the saved stream: the types, countries and matches `watch` uses by default (`--match`, `--matches`) |
+| `stream`, `stream set` | Show or change the saved stream: the types, countries and matches `watch` uses by default (`--match`, `--matches`). A running `watch` takes a change at its next reconnect, within about five minutes |
 | `stream preview` | What matches would have sent among the latest events, with examples, before saving them |
 | `types` | The event types, by family, and where each is collected (`--family`, `--json`) |
 | `fields` | The fields of one event type, for conditions: path, kind, an enum's values (`--json`) |
 | `estimate` | How many events filters find since a time, what counts toward the month, what's left (`--since`, `--json`) |
-| `events` | Read stored events (`--type`, `--country`, `--after`, `--before`, `--limit 1-200`, `--pages`, `--json`) |
+| `events` | Read stored events (`--type`, `--country`, `--after`, `--before`, `--limit 1-200`, `--pages`, `--json`); it doesn't use the saved stream, so without filters it reads every type and country |
 | `watch` | Stay connected and handle each new event as it arrives |
 | `request` | Ask for data that isn't collected yet (`--countries`, `--use`, `--source`, `--json`) |
 | `feedback` | Tell us about a bug, a problem or an idea (`--kind bug\|problem\|idea`, `--json`) |
@@ -251,7 +251,9 @@ npx worldsignals watch --type company.registered \
 ## Watch live
 
 `watch` stays connected and handles each event as it arrives. It remembers the number of the last event it handled,
-so after a restart, a sleeping laptop or a dropped network it carries on from there.
+so after a restart, a sleeping laptop or a dropped network it carries on from there. With no `--type` or `--country` it follows the saved stream,
+read each time it connects: a change in the console reaches it within about five minutes, or at once if you restart it.
+`--type all` is every type.
 
 ```sh
 # the saved stream, one JSON event per line
