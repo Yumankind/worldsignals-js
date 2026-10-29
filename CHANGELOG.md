@@ -3,7 +3,7 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
-## Unreleased
+## 0.5.1 (2026-10-29)
 
 - New: `disconnect` (also `logout`) starts from scratch: a connected agent leaves the account it acts for (as a
   revoke in the console would, `POST /api/agent/disconnect`), then this device forgets the agent key and where
