@@ -59,16 +59,16 @@ when, the company or thing it's about, a typed `data` payload and its source. A 
 
 | Family | For example | From |
 | --- | --- | --- |
-| Companies | `company.registered` | Company registers and gazettes in 23 countries: the UK, Spain, France, Norway, Finland, the Baltics, US states, Japan, Australia… |
+| Companies | `company.registered` | Company registers and gazettes in 23 countries: the UK, Spain, France, Norway, Finland, the Baltics, US states, Japan, Australia…; new LEIs worldwide; US IPO filings (`company.ipo_filed`) |
 | Government and legal | `procurement.tender_published` | The EU procurement journal and national tender portals (UK, Portugal, US, Canada, Japan…); also insolvencies, sanctions, recalls, licences, trade marks and new laws |
 | Security and AI | `vulnerability.exploited` | The national vulnerability database, the government list of exploited vulnerabilities, exploit archives; AI model releases, prices and retirements |
 | DevOps | `service.outage_started` | Provider status pages; package releases (PyPI, crates.io, AI SDKs on npm); new MCP servers; deprecations and end-of-life dates |
 | Property | `property.auction_scheduled` | Building permits, official sale prices, holiday-rental licences, public auctions |
 | Web | `domain.certificate_issued` | Domain registries and zone files, certificate transparency logs (look-alike domains), job ads, layoff notices |
-| Ports and energy | `energy.price_went_negative` | Port call registers, European day-ahead power auctions, grid outage notices |
+| Ports, energy and hazards | `energy.price_went_negative` | Port call registers, European day-ahead power auctions, grid outage notices; earthquake, cyclone, flood, drought and wildfire alerts (`hazard.alert_issued`) |
 | Combined | `combined.young_company_won_contract` | Two events about one company, joined: a young company wins a public contract |
 
-`XX` is the country for events about the whole world (vulnerabilities, outages, AI models). Without `--country` you
+`XX` is the country for events about the whole world (vulnerabilities, outages, AI models, disasters at sea). Without `--country` you
 get every country, `XX` included; with a list, add it to get them too: `--country ES,PT,XX`.
 
 ## For AI agents
