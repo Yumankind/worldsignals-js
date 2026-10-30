@@ -31,7 +31,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.5.2";
+export const VERSION = "0.5.3";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -551,9 +551,17 @@ const needsKey = (p, command) =>
   `then ${p} upgrade to pay for it, or ${p} connect to use the account of the person you work for.\n` +
   `(A named or personal access key from the console works too: --key <key>, or WS_KEY=<key> before the command.)`;
 
+/** The types every agent reads without a plan (the server's always-free types): vulnerabilities and our notices. */
+const ALWAYS_FREE = new Set(["vulnerability.published", "vulnerability.exploited", "vulnerability.advisory_published"]);
+/** Whether --type names types, and only always-free ones. */
+const alwaysFreeOnly = (type) => {
+  const types = String(type ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+  return types.length > 0 && types.every((t) => ALWAYS_FREE.has(t) || t.startsWith("worldsignals."));
+};
+
 /** What a command says when the agent has no plan yet (402). */
 const unpaid = (p) =>
-  `This agent isn't paid for yet. Run ${p} upgrade for a payment link, or ${p} connect to use the account of the person you work for.`;
+  `This agent isn't paid for yet. Run ${p} upgrade for a payment link, or ${p} connect to use the account of the person you work for. (Vulnerability alerts are free: --type vulnerability.exploited)`;
 
 const KEY_DOESNT_WORK = "That access key doesn't work. Sign in at https://worldsignals.dev/signin or open your Account page to see your current key.";
 const signatureRefused = (p, body = {}) =>
@@ -2025,6 +2033,11 @@ async function readyAgent(ctx, values) {
   if (first.status === 401) {
     err(signatureRefused(p, first.body));
     return { code: 1 };
+  }
+  // The always-free events need no plan: asked for those alone (the social posts' commands), it watches at once.
+  if (first.status === 200 && alwaysFreeOnly(values.type)) {
+    err(`No plan needed: vulnerability alerts are always free. For every other event, ${p} upgrade (a payment link) or ${p} connect (your WorldSignals account).`);
+    return {};
   }
   // Both ways forward. The payment link and the code are asked for once; a code still good is used again.
   const plan = (values.plan ?? "developer").toLowerCase();

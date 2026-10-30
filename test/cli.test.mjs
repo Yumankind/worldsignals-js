@@ -315,7 +315,7 @@ test("an unpaid agent is told to run pay or connect", async () => {
   const { env, server } = await withAgent({ "GET /api/events": () => [402, { error: "Payment required.", hint: "POST /api/agent/checkout" }] });
   const io = capture();
   assert.equal(await run(["events"], { fetch: server.fetch, env, name: "ws", ...io }), 1);
-  assert.deepEqual(io.lines.err, ["This agent isn't paid for yet. Run ws upgrade for a payment link, or ws connect to use the account of the person you work for."]);
+  assert.deepEqual(io.lines.err, ["This agent isn't paid for yet. Run ws upgrade for a payment link, or ws connect to use the account of the person you work for. (Vulnerability alerts are free: --type vulnerability.exploited)"]);
 });
 
 test("upgrade asks for a checkout link, prints it, opens the browser and with --wait waits until paid", async () => {
@@ -627,6 +627,18 @@ test("watch with an unpaid key shows the links and waits; Ctrl+C stops and keeps
   assert.match(io.lines.err.at(-1), /^Stopped waiting\. The agent key is saved/);
   assert.equal(readAgent(env, "https://ws.test").agent_id, "agt_1");
   assert.equal(readAgent(env, "https://ws.test").connect.user_code, "ABCD-EFGH", "the code is kept for the next run");
+});
+
+test("watch for the always-free types needs no plan: an unpaid agent watches at once, told how to get the rest", async () => {
+  const { env, server } = await withAgent({ "GET /api/agent/me": () => [200, { agent_id: "agt_1", status: "unpaid" }] });
+  const inner = server.fetch;
+  const fetch = async (url, init = {}) => (new URL(url).pathname === "/api/stream" ? new Response(SSE, { headers: { "content-type": "text/event-stream" } }) : inner(url, init));
+  const io = capture();
+  const state = join(mkdtempSync(join(tmpdir(), "ws-cli-")), "watch.json");
+  assert.equal(await run(["watch", "--once", "--state", state, "--type", "vulnerability.exploited,vulnerability.published"], { fetch, env, sleep: async () => assert.fail("no waiting"), ...io }), 0);
+  assert.ok(!server.calls.some((c) => c.path === "/api/agent/checkout" || c.path === "/api/agent/connect"), "no payment link or code");
+  assert.match(io.lines.err.join("\n"), /No plan needed: vulnerability alerts are always free\. For every other event, ws upgrade .* or ws connect/);
+  assert.deepEqual(io.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
 });
 
 test("watch at a terminal: orange labels, whole links clickable, and Enter opens the payment page (c, the connect page)", async () => {
