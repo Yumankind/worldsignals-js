@@ -70,19 +70,32 @@ WebSocket package.)
 ## What you get
 
 Every event has the same shape: a [CloudEvents](https://cloudevents.io) envelope with a stable id, a type, where and
-when, the company or thing it's about, a typed `data` payload and its source. A few of the types, by family; the
-[catalogue](https://worldsignals.dev/events) lists them all, ready or planned.
+when, the company or thing it's about, a typed `data` payload and its source. The event types collected today, by
+family:
 
-| Family | For example | From |
+| Family | Event types | From |
 | --- | --- | --- |
-| Companies | `company.registered` | Company registers and gazettes in 23 countries: the UK, Spain, France, Norway, Finland, the Baltics, US states, Japan, Australia…; new LEIs worldwide; US IPO filings (`company.ipo_filed`) |
-| Government and legal | `procurement.tender_published` | The EU procurement journal and national tender portals (UK, Portugal, US, Canada, Japan…); also insolvencies, sanctions, recalls, licences, trade marks and new laws |
-| Security and AI | `vulnerability.exploited` | The national vulnerability database, the government list of exploited vulnerabilities, exploit archives; AI model releases, prices and retirements |
-| DevOps | `service.outage_started` | Provider status pages; package releases (PyPI, crates.io, AI SDKs on npm); new MCP servers; deprecations and end-of-life dates |
-| Property | `property.auction_scheduled` | Building permits, official sale prices, holiday-rental licences, public auctions |
-| Web | `domain.certificate_issued` | Domain registries and zone files, certificate transparency logs (look-alike domains), job ads, layoff notices |
-| Ports, energy and hazards | `energy.price_went_negative` | Port call registers, European day-ahead power auctions, grid outage notices; earthquake, cyclone, flood, drought and wildfire alerts (`hazard.alert_issued`) |
-| Combined | `combined.young_company_won_contract` | Two events about one company, joined: a young company wins a public contract |
+| Companies | `company.registered`, `company.dissolved`, `company.relocated`, `company.filing_published`, `company.funding_announced`, `company.business_sold`, `company.announced`, `company.ipo_filed`, `company.lei_issued` | Company registers and gazettes in 23 countries (the UK, Spain, France, Norway, Finland, the Baltics, US states, Japan, Australia…), new LEIs worldwide, US IPO filings |
+| Government and legal | `procurement.tender_published`, `procurement.contract_awarded`, `insolvency.proceeding_opened`, `grant.awarded`, `licence.granted`, `venue.opened`, `recall.issued`, `sanctions.entry_added`, `sanctions.entry_removed`, `trademark.filed`, `trademark.registered`, `regulation.published`, `regulation.consultation_opened`, `enforcement.action_published` | The EU procurement journal and national tender portals, insolvency and grant registers, licensing and food authorities, recall and sanctions lists, trade mark offices, official journals |
+| Property | `property.sold`, `property.auction_scheduled`, `property.energy_certificates_lodged`, `property.rental_licence_granted`, `permit.filed`, `permit.granted` | Official sale prices, public auctions, energy certificates, holiday-rental licences, building permits |
+| Security, AI and devices | `vulnerability.published`, `vulnerability.exploited`, `exploit.published`, `breach.disclosed`, `ai_model.released`, `ai_model.price_changed`, `ai_model.retirement_announced`, `ai_model.retired`, `device.certified` | The national vulnerability database, the government list of exploited vulnerabilities, exploit archives, breach notices, AI model catalogues, device certifications |
+| DevOps and infrastructure | `service.outage_started`, `service.outage_resolved`, `software.released`, `software.end_of_life`, `platform.deprecation_announced`, `vulnerability.advisory_published`, `mcp_server.published` | Provider status pages, package registries (PyPI, crates.io, AI SDKs on npm), open-source security advisories, the MCP registry, deprecation and end-of-life notices |
+| Web and media | `domain.registered`, `domain.dropped`, `domain.zone_counted`, `domain.certificate_issued`, `jobs.posting_published`, `jobs.hiring_surged`, `jobs.layoff_announced` | Domain registries and zone files, certificate transparency logs (look-alike domains), job ads, layoff notices |
+| Ports and physical world | `vessel.arrived`, `vessel.departed`, `port.activity_changed`, `energy.price_published`, `energy.price_moved`, `energy.price_went_negative`, `energy.unavailability_announced`, `energy.unavailability_updated`, `hazard.alert_issued` | Port call registers, European day-ahead power auctions, grid outage notices; earthquake, cyclone, flood, volcano, drought and wildfire alerts |
+| Combined signals | `combined.young_company_won_contract`, `combined.young_company_licensed`, `combined.supplier_went_insolvent` | Two events about one company, joined: a young company wins a public contract or gets a licence, a supplier goes insolvent |
+| WorldSignals | `worldsignals.cli_released` | Our own notices: a new version of this tool |
+
+The vulnerability types (`vulnerability.published`, `vulnerability.exploited`, `vulnerability.advisory_published`)
+are free for everyone. More types are planned: news, app releases, website changes, your own inbox and reviews.
+
+**The full catalogue**, with every type ready or planned, the countries each is collected in, its fields and a real
+example, is at [worldsignals.dev/events](https://worldsignals.dev/events). In the terminal:
+
+```sh
+npx worldsignals types                          # every type, by family, and where it's collected
+npx worldsignals types --family public          # one family
+npx worldsignals fields company.registered      # one type's fields, for conditions
+```
 
 `XX` is the country for events about the whole world (vulnerabilities, outages, AI models, disasters at sea). Without `--country` you
 get every country, `XX` included; with a list, add it to get them too: `--country ES,PT,XX`.
