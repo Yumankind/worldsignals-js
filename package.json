@@ -1,6 +1,6 @@
 {
   "name": "worldsignals",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Real-world events for code and AI agents: new companies, tenders, vulnerabilities, outages and AI models as one standard stream. The CLI; the MCP server is live at worldsignals.dev/mcp.",
   "type": "module",
   "bin": {

@@ -31,7 +31,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.5.4";
+export const VERSION = "0.5.5";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -2329,16 +2329,30 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause,
       if (!res.ok) trouble = `the server answered ${res.status}`;
       else {
         let said = false;
+        // "Watching…" is the last line before the events: the notices the server sends after `ready` come first. It is
+        // said at the first other message, or after a second at most.
+        let watching = null;
+        const sayWatching = () => {
+          if (!watching) return;
+          clearTimeout(watching.timer);
+          for (const line of watching.lines) err(line);
+          watching = null;
+        };
         for await (const m of readEvents(res.body)) {
           alive();
+          if (m.event !== "notice") sayWatching();
           if (m.event === "ready") {
             const r = JSON.parse(m.data);
             after ??= r.after;
             backoff = 1000;
             // Save the starting point too, so a run that handles nothing still tells the next where to begin.
             if (!announced) then(() => save(after));
-            if (!announced) err(`Watching for new events after number ${after}${r.types?.length ? ` (${r.types.join(", ")})` : ""}. Ctrl+C stops.`);
-            if (!announced && r.hint) err(`Note: ${r.hint}`);
+            if (!announced) {
+              const lines = [`Watching for new events after number ${after}${r.types?.length ? ` (${r.types.join(", ")})` : ""}. Ctrl+C stops.`];
+              if (r.hint) lines.push(`Note: ${r.hint}`);
+              watching = { lines, timer: setTimeout(sayWatching, 1000) };
+              watching.timer.unref?.();
+            }
             announced = true;
             if (r.cli_latest) board?.latest(r.cli_latest);
           } else if (m.event === "notice") {
@@ -2368,6 +2382,7 @@ async function watch(rest, { api, fetch, env, out, err, spawn, signal, p, pause,
           } else if (m.event === "bye") said = true;
           if (stop.signal.aborted) break;
         }
+        sayWatching();
         if (!said && !done && !stop.signal.aborted) trouble = "the stream ended early";
       }
     } catch (e) {

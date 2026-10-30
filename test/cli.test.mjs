@@ -1465,6 +1465,9 @@ test("watch prints WorldSignals notices on stderr only: never on stdout, never t
   assert.deepEqual(io.lines.out, ['{"id":"evt_5","type":"company.registered"}']);
   assert.ok(io.lines.err.includes("WorldSignals: Maintenance on Monday [2J — https://worldsignals.dev/status"));
   assert.ok(io.lines.err.includes(`worldsignals 99.0.0 is out (you have ${VERSION}): npx worldsignals@latest, or npm i -g worldsignals`));
+  // "Watching…" comes last, after the notices the server sends right after ready.
+  const order = io.lines.err.map((l) => (l.startsWith("Watching") ? "watching" : l.startsWith("WorldSignals:") ? "notice" : "other")).filter((k) => k !== "other");
+  assert.deepEqual(order, ["notice", "watching"]);
   assert.equal(JSON.parse(readFileSync(state, "utf8")).after, 5);
 
   // The next run (or a reconnect that sends the notice again): neither line is repeated, at most once a day.
