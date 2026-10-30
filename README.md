@@ -29,13 +29,28 @@ Node 18 or later, no dependencies. The [MCP server](#mcp-server) is live too.
 
 ## Quick start
 
+**Vulnerability alerts: free, with no account.**
+
 ```sh
-npx worldsignals watch --type vulnerability.exploited
+npx worldsignals@latest watch --type vulnerability.exploited
 ```
 
-That's the whole setup. The first time, `watch` makes this machine's agent account (no email), prints a payment
-link and a connect code, and starts printing events, one JSON line each, once you've paid or approved the code at
-[worldsignals.dev/link](https://worldsignals.dev/link). Next time it carries on where it stopped.
+That's the whole setup. The first time, `watch` makes this machine's agent account (a key kept on this machine; no
+email, no password) and prints each vulnerability the moment it is listed as exploited in the wild, one JSON line
+each. Next time it carries on where it stopped. `--type vulnerability.published` is every new CVE, and `--agent claude`
+hands each one to Claude Code.
+
+**Everything else** (new companies, tenders, IPO filings, outages, AI models and the rest) needs a plan. The simplest
+way is to connect this machine to your WorldSignals account, whose free plan has 2,500 events a month and needs no
+card: sign up at [worldsignals.dev](https://worldsignals.dev), then
+
+```sh
+npx worldsignals connect
+```
+
+and approve the code it shows at [worldsignals.dev/link](https://worldsignals.dev/link). Or let the agent pay for a
+plan of its own: `npx worldsignals upgrade`. Run `watch` for those types before either, and it prints both ways and
+starts as soon as one is done.
 
 Then:
 
@@ -48,8 +63,9 @@ npx worldsignals watch --type procurement.tender_published --agent claude --batc
 npx worldsignals help
 ```
 
-With `npm install -g worldsignals`, `ws` is the short name: `ws watch`, `ws events`. (Not `npx ws`: that's an
-unrelated WebSocket package.)
+`@latest` makes npx fetch the newest version; without it, npx keeps using the one it already has. With
+`npm install -g worldsignals`, `ws` is the short name: `ws watch`, `ws events`. (Not `npx ws`: that's an unrelated
+WebSocket package.)
 
 ## What you get
 
@@ -80,8 +96,8 @@ npx worldsignals signup --name "My agent" --label laptop
 ```
 
 `signup` makes an Ed25519 key pair on this machine (`~/.config/worldsignals/agent.json`, readable only by you) and
-signs every request with it; the private key never leaves the machine. Agent accounts have no free plan, so next,
-either:
+signs every request with it; the private key never leaves the machine. Vulnerability alerts work straight away. For
+every other type, the agent needs a plan of its own or a person's account to act for:
 
 ```sh
 # a Stripe payment link to pass on: your person pays, you never see a card
@@ -90,9 +106,9 @@ npx worldsignals upgrade --plan developer
 npx worldsignals connect
 ```
 
-Or skip both: `watch` signs the agent up by itself the first time, prints the payment link and the connect code, and
-starts once one of them is done (`--no-wait` prints them and exits). An agent with no plan and no connection is
-deleted seven days after it was made, or after its plan ends.
+Or skip both: the first `watch` for those types signs the agent up by itself, prints the payment link and the connect
+code, and starts once one of them is done (`--no-wait` prints them and exits). An agent with no plan and no connection
+is deleted seven days after it was last used, or after its plan ends.
 
 A named or personal access key from the [console](https://worldsignals.dev/console/account) works everywhere instead
 of the agent key: `--key wsk_…` or `WS_KEY=wsk_…`.
@@ -147,6 +163,7 @@ command.
 | `upgrade` | A payment link for the agent's own plan (`--plan developer\|team\|business`, `--yearly`, `--wait`, `--json`) |
 | `connect` | Act for your person's account once they approve the code (`--email` also puts the request in their console; `--no-wait`, `--json`) |
 | `status` | The agent, its plan or the account it's connected to (`--json`) |
+| `disconnect` | Leave the account it acts for and forget this machine's key and place, to start from scratch (also `logout`) |
 | `billing` | Stripe's billing portal for an agent that pays for its own plan: change plan or card, invoices, cancel |
 | `keys rotate` | A new key for this agent; the old one stops working |
 | `recover` | A new key for an agent whose key was lost, approved by the person who pays for it or connected it |
@@ -282,9 +299,6 @@ decides better than a run per event ([delivery modes](https://worldsignals.dev/d
 keeps a number of live connections open at once (Free 1, Developer 5, Team 25, Business 100); past that, `watch`
 says so, waits as long as the server asks and connects again.
 
-Vulnerability alerts need no plan: `watch --type vulnerability.exploited` (or `vulnerability.published`,
-`vulnerability.advisory_published`) starts at once on a new device. Other types ask for a plan or a connection first.
-
 ### Keep it running
 
 `watch` already carries on from where it stopped, so all it needs is something that starts it when the computer
@@ -398,8 +412,8 @@ Setup for each app: [worldsignals.dev/connect](https://worldsignals.dev/connect)
 
 ## Plans
 
-Free (by invite), Developer, Team and Business, with vulnerabilities free on every plan:
-[pricing](https://worldsignals.dev/#pricing).
+Vulnerability alerts are free for everyone, with or without an account. Accounts have a free plan (2,500 events a
+month) and Developer, Team and Business plans: [pricing](https://worldsignals.dev/#pricing).
 
 ## Links
 
