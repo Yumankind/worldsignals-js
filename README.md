@@ -173,7 +173,7 @@ command.
 | Command | What it does |
 | --- | --- |
 | `signup` | The agent's account and its key on this machine (`--name`, `--label`, optional `--email`, `--json`) |
-| `upgrade` | A payment link for the agent's own plan (`--plan developer\|team\|business`, `--yearly`, `--wait`, `--json`) |
+| `upgrade` | A payment link for the agent's own plan (`--plan` developer, team or business; `--yearly`, `--wait`, `--json`) |
 | `connect` | Act for your person's account once they approve the code (`--email` also puts the request in their console; `--no-wait`, `--json`) |
 | `status` | The agent, its plan or the account it's connected to (`--json`) |
 | `disconnect` | Leave the account it acts for and forget this machine's key and place, to start from scratch (also `logout`) |
@@ -188,7 +188,7 @@ command.
 | `events` | Read stored events (`--type`, `--country`, `--after`, `--before`, `--limit 1-200`, `--pages`, `--json`); it doesn't use the saved stream, so without filters it reads every type and country |
 | `watch` | Stay connected and handle each new event as it arrives |
 | `request` | Ask for data that isn't collected yet (`--countries`, `--use`, `--source`, `--json`) |
-| `feedback` | Tell us about a bug, a problem or an idea (`--kind bug\|problem\|idea`, `--json`) |
+| `feedback` | Tell us about a bug, a problem or an idea (`--kind` bug, problem or idea; `--json`) |
 | `api` | Any call to the WorldSignals API under `/api/`, signed as the other commands sign (`--raw`) |
 
 `npx worldsignals help` has every option. `WS_API` points the tool at another server, for testing.
@@ -269,7 +269,7 @@ filters all apply.
 | `--ecosystem` | Package registries: `npm`, `pypi`, `maven`, `nuget`, `go`, `rubygems`, `crates`, `packagist`, `pub`, `hex`, `swift`, `cocoapods`, `github_actions`, `wordpress` |
 | `--language` | Programming languages: `php`, `javascript`, `python`, `java`, `csharp`, `go`, `ruby`, `rust`, `cpp`, `kotlin`, `swift`, `dart`, `elixir` |
 | `--tag` | Any of these tags, e.g. `critical,ransomware` |
-| `--where` | A field condition, repeatable: `=` `!=` `>` `>=` `<` `<=`, text `*=` (contains) `^=` `$=`, regex `~=`; `\|` between values. Places: `place.near=lat,lon,km`, `place.within=south,west,north,east` |
+| `--where` | A field condition, repeatable: `=` `!=` `>` `>=` `<` `<=`, text `*=` (contains) `^=` `$=`, regex `~=`; a pipe between values matches any of them (example below). Places: `place.near=lat,lon,km`, `place.within=south,west,north,east` |
 
 ```sh
 npx worldsignals events --type vulnerability.published --platform windows \
@@ -300,11 +300,11 @@ npx worldsignals watch --type vulnerability.exploited --agent claude --prompt ./
 | Option | Meaning |
 | --- | --- |
 | `--exec <program>` | Run it for each event (or batch), events as JSON lines on stdin, never through a shell. Arguments after `--` go to it. `WS_KEY` is left out of its environment |
-| `--agent claude\|codex` | Start `claude -p` or `codex exec` (read-only sandbox) with `--prompt` (text or a file) and the events fenced off as data |
+| `--agent claude` or `--agent codex` | Start `claude -p` or `codex exec` (read-only sandbox) with `--prompt` (text or a file) and the events fenced off as data |
 | `--out <folder>` | Write each event to its own file |
 | `--batch` | Run once for events that came together: after `--batch-idle` (60 s) quiet, at most `--batch-max-wait` (600 s), or `--batch-max` (100) events |
 | `--once` | Handle what's waiting, then exit: for cron |
-| `--from now\|start\|<number>`, `--state <file>` | Where to begin, and where it remembers its place (default `~/.config/worldsignals/watch.json`) |
+| `--from` now, start or an event number; `--state <file>` | Where to begin, and where it remembers its place (default `~/.config/worldsignals/watch.json`) |
 
 Events are handled one after another, oldest first, at least once: the place is saved only after the program or
 agent finishes. For AI agents, use `--batch` or `--out`: one run that sees related events together costs less and
