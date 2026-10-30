@@ -31,7 +31,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_API = "https://worldsignals.dev";
-export const VERSION = "0.5.3";
+export const VERSION = "0.5.4";
 const PLAN_IDS = ["developer", "team", "business"];
 
 /** The help text, naming the command as it was run (`p`: npx worldsignals, ws, worldsignals, node ws.mjs). */
@@ -289,13 +289,15 @@ function noticeBoard({ env, err, now = () => Date.now() }, { quiet = false } = {
   };
   let updateSaid = false;
   return {
-    /** A notice from the stream (event: notice) or a header: printed once per id. */
+    /** A notice from the stream (event: notice) or a header: printed once per id. A release of this version or an
+     * older one isn't news here: it is left out. */
     notice(event, { fromHeader = false } = {}) {
       if (fromHeader && quiet) return;
       const id = typeof event?.id === "string" ? event.id : null;
       const s = read();
       if (id && s.shown.includes(id)) return;
-      err(noticeLine(event));
+      const released = releasedVersion(event);
+      if (!released || newerVersion(released, VERSION)) err(noticeLine(event));
       if (id) {
         s.shown = [...s.shown, id].slice(-50);
         write();
@@ -315,7 +317,17 @@ function noticeBoard({ env, err, now = () => Date.now() }, { quiet = false } = {
   };
 }
 
-/** X-WS-Notice: `evt_…; title="…"; url="…"`, percent-encoded where it isn't plain ASCII. */
+/** The version a notice announces, if it is a CLI release: its data's (from the stream), the header's `version`, or
+ * the release link's tag (from servers that don't send `version` yet); else null. */
+export function releasedVersion(e) {
+  const d = (e && typeof e.data === "object" && e.data) || {};
+  const release = e?.type === "worldsignals.cli_released" || typeof e?.version === "string" || /\/worldsignals-js\/releases\/tag\/v/.test(d.url ?? "");
+  if (!release) return null;
+  const v = [d.version, e?.version, /\/releases\/tag\/v([0-9][0-9A-Za-z.+-]*)/.exec(d.url ?? d.notes_url ?? "")?.[1]].find((x) => typeof x === "string" && /^\d+\.\d+\.\d+/.test(x));
+  return v ?? null;
+}
+
+/** X-WS-Notice: `evt_…; title="…"; url="…"[; version="…"]`, percent-encoded where it isn't plain ASCII. */
 export function parseNoticeHeader(value) {
   const id = /^(evt_[0-9A-Za-z]+)/.exec(value ?? "")?.[1];
   if (!id) return null;
@@ -329,7 +341,8 @@ export function parseNoticeHeader(value) {
     }
   };
   const url = field("url");
-  return { id, title: field("title") ?? "a notice", ...(url ? { data: { url } } : {}) };
+  const version = field("version");
+  return { id, title: field("title") ?? "a notice", ...(url ? { data: { url } } : {}), ...(version ? { version } : {}) };
 }
 
 /** A fetch that hands each answer's notice headers to the board before returning it unchanged. */

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { VERSION, newerVersion, noticeLine, parseNoticeHeader, agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, retryWhen, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
+import { VERSION, newerVersion, noticeLine, parseNoticeHeader, releasedVersion, agentHeaders, agentPath, commandName, help, newKeyPair, readAgent, retryWhen, run as runCli, signedString, signingTime } from "../bin/ws.mjs";
 
 // Never a real browser from a test: commands that open a link (upgrade, billing, connect) get a spawn that does
 // nothing and a platform with no browser, unless the test brings its own to check that it opens.
@@ -1503,4 +1503,22 @@ test("events says a newer CLI version once a day on stderr, from the server's he
   const none = capture();
   assert.equal(await run(["events"], { fetch: current, env: { ...env, XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "ws-cli-")) }, ...none }), 0);
   assert.deepEqual(none.lines.err.filter((l) => l.startsWith("worldsignals ")), []);
+});
+
+test("a release notice for this version or an older one isn't shown; a newer one is", async () => {
+  const tag = (v) => `https://github.com/Yumankind/worldsignals-js/releases/tag/v${v}`;
+  assert.equal(releasedVersion({ type: "worldsignals.cli_released", data: { version: "0.6.0" } }), "0.6.0");
+  assert.equal(releasedVersion(parseNoticeHeader(`evt_R; title="worldsignals 0.6.0 is out"; url="${tag("0.6.0")}"; version="0.6.0"`)), "0.6.0");
+  // From a server that doesn't send version yet: the release link's tag.
+  assert.equal(releasedVersion(parseNoticeHeader(`evt_R; title="worldsignals 0.6.0 is out"; url="${tag("0.6.0")}"`)), "0.6.0");
+  assert.equal(releasedVersion({ type: "worldsignals.maintenance_scheduled", data: { url: "https://worldsignals.dev/status" } }), null);
+  const said = async (header) => {
+    const fetch = async () => new Response(JSON.stringify({ events: [], cursor: 9 }), { headers: { "content-type": "application/json", "x-ws-notice": header } });
+    const io = capture();
+    assert.equal(await run(["events"], { fetch, env: { WS_KEY: "k", XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "ws-cli-")) }, ...io }), 0);
+    return io.lines.err;
+  };
+  assert.deepEqual(await said(`evt_A; title="worldsignals ${VERSION} is out: npx worldsignals@latest"; url="${tag(VERSION)}"; version="${VERSION}"`), []);
+  assert.deepEqual(await said(`evt_B; title="worldsignals 0.0.1 is out"; url="${tag("0.0.1")}"`), []);
+  assert.deepEqual(await said(`evt_C; title="worldsignals 99.0.0 is out"; url="${tag("99.0.0")}"; version="99.0.0"`), [`WorldSignals: worldsignals 99.0.0 is out — ${tag("99.0.0")}`]);
 });
