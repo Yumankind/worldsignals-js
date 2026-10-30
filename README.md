@@ -37,7 +37,7 @@ npx worldsignals@latest watch --type vulnerability.exploited
 
 That's the whole setup. The first time, `watch` makes this machine's agent account (a key kept on this machine; no
 email, no password) and prints each vulnerability the moment it is listed as exploited in the wild, one JSON line
-each. Next time it carries on where it stopped. `--type vulnerability.published` is every new CVE, and `--agent claude`
+each. The next time it runs, it carries on where it stopped. `--type vulnerability.published` is every new CVE, and `--agent claude`
 hands each one to Claude Code.
 
 **Everything else** (new companies, tenders, IPO filings, outages, AI models and the rest) needs a plan. The simplest
