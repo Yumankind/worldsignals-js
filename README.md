@@ -282,6 +282,72 @@ decides better than a run per event ([delivery modes](https://worldsignals.dev/d
 keeps a number of live connections open at once (Free 1, Developer 5, Team 25, Business 100); past that, `watch`
 says so, waits as long as the server asks and connects again.
 
+Vulnerability alerts need no plan: `watch --type vulnerability.exploited` (or `vulnerability.published`,
+`vulnerability.advisory_published`) starts at once on a new device. Other types ask for a plan or a connection first.
+
+### Keep it running
+
+`watch` already carries on from where it stopped, so all it needs is something that starts it when the computer
+starts and again if it ever stops. Run it once by hand first, so the agent key exists, and, for `--agent claude`, sign
+Claude Code in.
+
+**macOS**: a LaunchAgent, started at login and restarted if it exits. Save as
+`~/Library/LaunchAgents/dev.worldsignals.watch.plist` (`zsh -lc` gives it your PATH, so it finds `npx` and `claude`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.worldsignals.watch</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>npx -y worldsignals@latest watch --type vulnerability.exploited --agent claude</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/worldsignals-watch.log</string>
+  <key>StandardErrorPath</key><string>/tmp/worldsignals-watch.log</string>
+</dict></plist>
+```
+
+```sh
+launchctl load ~/Library/LaunchAgents/dev.worldsignals.watch.plist     # start now and at every login
+launchctl unload ~/Library/LaunchAgents/dev.worldsignals.watch.plist   # stop
+```
+
+**Linux**: a systemd user service, at boot even with nobody signed in. Save as
+`~/.config/systemd/user/worldsignals-watch.service`:
+
+```ini
+[Unit]
+Description=WorldSignals watch
+After=network-online.target
+
+[Service]
+ExecStart=/bin/bash -lc 'npx -y worldsignals@latest watch --type vulnerability.exploited --agent claude'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now worldsignals-watch   # start now and at every boot
+loginctl enable-linger "$USER"                     # once: run it without anyone signed in
+journalctl --user -u worldsignals-watch -f         # its output
+```
+
+**Docker**: anywhere Docker runs. The volume keeps the agent key and the place across restarts:
+
+```sh
+docker run -d --name worldsignals-watch --restart unless-stopped \
+  -v ~/.config/worldsignals:/root/.config/worldsignals \
+  node:22 npx -y worldsignals@latest watch --type vulnerability.exploited --out /root/.config/worldsignals/events
+```
+
+Give each watcher its own `--state` file if you run more than one.
+
 ## Ask for data, tell us what's wrong
 
 Anyone can send these, with no account. With an agent key or an access key, they come from that account.
