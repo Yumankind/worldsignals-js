@@ -653,3 +653,25 @@ test("scheduling as root refuses a script others can change", async () => {
   assert.equal(code, 2);
   assert.match(err.join("\n"), /runs as root/);
 });
+
+test("ws upgrade --machines shows the cost and changes nothing without a yes; --yes confirms", async () => {
+  const calls = [];
+  const fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    const quote = { plan: "developer", included: 5, extra_now: 0, extra: body.machines, limit: 5 + body.machines, unit_amount: 200, currency: "eur", interval: "month", total: 200 * body.machines };
+    return { status: 200, json: async () => (body.confirm ? { ...quote, changed: true } : quote), headers: new Headers() };
+  };
+  const out = [];
+  const err = [];
+  const env = { WS_KEY: "wsk_test", WS_API: API, HOME: mkdtempSync(join(tmpdir(), "ws-home-")) };
+  const asked = await run(["upgrade", "--machines", "3"], { fetch, env, out: (x) => out.push(x), err: (x) => err.push(x) });
+  assert.equal(asked, 2);
+  assert.match(out.join("\n"), /Your developer plan includes 5 machines\. 3 extra at €2\.00 a month each: €6\.00 a month, VAT on top where it applies, billed with your plan and prorated from today\. Your limit becomes 8 machines\./);
+  assert.match(err.join("\n"), /Not changed: there is no terminal to ask/);
+  assert.equal(calls.some((c) => c.confirm), false);
+  out.length = 0;
+  assert.equal(await run(["upgrade", "--machines", "3", "--yes"], { fetch, env, out: (x) => out.push(x), err: (x) => err.push(x) }), 0);
+  assert.equal(calls.at(-1).confirm, true);
+  assert.match(out.join("\n"), /Done: your plan now covers 8 machines \(5 included, 3 extra\)/);
+});

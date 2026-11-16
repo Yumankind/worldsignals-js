@@ -56,6 +56,9 @@ Your agent:
       --force            replace the agent key already on this device (the old one can't be used again)
       --json             the new agent as one JSON object: {status, agent_id, name, key_file, next}
 
+  ${p} upgrade --machines <n> [--yes]
+      Pay for <n> machines beyond the ones your plan includes (Developer 5, Team 50, Business 250), at €2 a
+      month each, for vulnerability alerts (${p} scan --alerts). Shows the cost and asks; 0 removes them.
   ${p} upgrade [--plan developer|team|business] [--yearly] [--wait] [--no-open] [--json]
       Print a Stripe payment link for the agent's own plan (default: developer, monthly) and open it in
       the browser. Whoever pays gives Stripe their email, for receipts, and can manage the subscription
@@ -1082,12 +1085,73 @@ async function waitForApproval(ctx, privateKey, agentId, flow) {
 
 // ws upgrade: POST /api/agent/checkout, a Stripe Checkout link for the agent's own plan. With --key or WS_KEY,
 // POST /api/billing/checkout for that personal access key's account, as before agent accounts.
+/**
+ * ws upgrade --machines <n>: how many extra machines the paid plan pays for, beyond the ones it includes (€2 a month
+ * each). Shows what it costs and asks before changing anything; --yes for scripts. 0 removes them.
+ */
+async function extraMachines(ctx, values) {
+  const { out, err, p, env, api, fetch } = ctx;
+  const n = Number(values.machines);
+  if (!Number.isInteger(n) || n < 0) {
+    err(`--machines is how many extra machines to pay for, beyond the ones your plan includes (0 removes them), e.g. ${p} upgrade --machines 10.`);
+    return 2;
+  }
+  const cred = credentials(values, env, api);
+  if (!cred) {
+    err(needsKey(p, "upgrade --machines"));
+    return 2;
+  }
+  const call = async (body) => {
+    const url = `${api}/api/billing/machines`;
+    const text = JSON.stringify(body);
+    const res = await fetch(url, { method: "POST", headers: { "user-agent": `ws-cli/${VERSION}`, "content-type": "application/json", ...cred.headers("POST", url, text) }, body: text });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+  const quote = await call({ machines: n });
+  if (quote.status >= 400) {
+    err(quote.body.error ?? `WorldSignals answered ${quote.status}.`);
+    return 1;
+  }
+  const q = quote.body;
+  const money = (cents) => (cents === null || cents === undefined ? "?" : new Intl.NumberFormat("en-GB", { style: "currency", currency: String(q.currency).toUpperCase() }).format(cents / 100));
+  if (values.json && !values.yes) {
+    out(JSON.stringify(q));
+    return 0;
+  }
+  out(
+    `Your ${q.plan} plan includes ${q.included} machines. ${n === q.extra_now ? `It already pays for ${n} extra; nothing to change.` : `${n} extra at ${money(q.unit_amount)} a ${q.interval} each: ${money(q.total)} a ${q.interval}, VAT on top where it applies, billed with your plan and prorated from today. Your limit becomes ${q.limit} machines.`}${q.test_mode ? " (Stripe test mode.)" : ""}`,
+  );
+  if (n === q.extra_now) return 0;
+  if (!values.yes) {
+    if (!ctx.stdin) {
+      err(`Not changed: there is no terminal to ask. Add --yes to confirm.`);
+      return 2;
+    }
+    err(`Change the subscription? [y/N] `);
+    const rl = createInterface({ input: ctx.stdin, terminal: false });
+    const line = await new Promise((resolve) => rl.once("line", resolve).once("close", () => resolve("")));
+    rl.close();
+    if (!/^y(es)?$/i.test(String(line).trim())) {
+      out("Nothing changed.");
+      return 0;
+    }
+  }
+  const done = await call({ machines: n, confirm: true });
+  if (done.status >= 400) {
+    err(done.body.error ?? `WorldSignals answered ${done.status}.`);
+    return 1;
+  }
+  out(values.json ? JSON.stringify(done.body) : `Done: your plan now covers ${done.body.limit} machines (${done.body.included} included, ${done.body.extra} extra). ${p} billing shows the invoice.`);
+  return 0;
+}
+
 async function payCommand(rest, ctx) {
   const { out, err, p, env, spawn, platform, pause, signal } = ctx;
   const { values } = parseArgs({
     args: rest,
-    options: { plan: { type: "string" }, yearly: { type: "boolean" }, billing: { type: "string" }, wait: { type: "boolean" }, "no-open": { type: "boolean" }, key: { type: "string" }, json: { type: "boolean" } },
+    options: { plan: { type: "string" }, yearly: { type: "boolean" }, billing: { type: "string" }, wait: { type: "boolean" }, "no-open": { type: "boolean" }, key: { type: "string" }, json: { type: "boolean" }, machines: { type: "string" }, yes: { type: "boolean" } },
   });
+  if (values.machines !== undefined) return extraMachines(ctx, values);
   const plan = (values.plan ?? "developer").toLowerCase();
   const billing = values.yearly ? "yearly" : (values.billing ?? "monthly");
   if (!PLAN_IDS.includes(plan) || !["monthly", "yearly"].includes(billing)) {
