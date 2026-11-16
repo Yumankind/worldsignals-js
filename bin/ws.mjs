@@ -185,6 +185,17 @@ This machine (no account or key needed):
       one upgrade that fixes each group, then what no longer gets security fixes. Free and complete. Sends
       package names and versions to OSV.dev and product names to endoflife.date, nothing to WorldSignals;
       --dry-run shows every request and sends none. ${p} scan --help lists the options.
+  ${p} scan --alerts [--token <token>]
+      Opt in: WorldSignals keeps this machine's list of names and versions and tells your account when a new
+      vulnerability hits it. Shows every line before sending. --schedule daily keeps it current; --forget deletes it.
+
+Many machines, from the command line (no web console needed):
+  ${p} machine token [--uses <n>] [--expires <days>d]   an enrolment token, and the line to run on each machine
+  ${p} machine enrol --token <token> [--yes]           enrol this machine with it (token also from WS_ENROL_TOKEN)
+  ${p} machine add, then ${p} machine approve <code>     a few machines, no token: approve the code it shows
+  ${p} machines [--json]                              list them, with the tokens still working
+  ${p} machine remove <id>, ${p} machine token --revoke <id>
+      ${p} machine help has the details.
 
 Plan a stream (types and fields need no key):
   ${p} types [--family <ids>] [--json]
@@ -701,6 +712,8 @@ export async function run(
   if (command === "estimate") return estimateCommand(rest, ctx);
   if (command === "api") return apiCommand(rest, ctx);
   if (command === "scan") return scanCommand(rest, ctx);
+  if (command === "machines") return scanCommand(["list", ...rest], ctx, "machineCommand");
+  if (command === "machine") return scanCommand(rest, ctx, "machineCommand");
 
   if (command === "events") return eventsCommand(rest, ctx);
 
@@ -714,7 +727,7 @@ export async function run(
  * ws scan lives in scan.mjs, next to this file, loaded only when it runs (the npm package has both). Someone who
  * downloaded ws.mjs alone is told where to get the other one.
  */
-async function scanCommand(rest, ctx) {
+async function scanCommand(rest, ctx, entry = "scan") {
   let mod;
   try {
     mod = await import("./scan.mjs");
@@ -733,7 +746,7 @@ async function scanCommand(rest, ctx) {
   try {
     scriptPath = realpathSync(process.argv[1]);
   } catch {}
-  return mod.scan(rest, { ...ctx, version: VERSION, credentialHeaders: cred ? (method, url, body) => cred.headers(method, url, body) : null, scriptPath });
+  return mod[entry](rest, { ...ctx, version: VERSION, credentialHeaders: cred ? (method, url, body) => cred.headers(method, url, body) : null, scriptPath });
 }
 
 /** Pages ws events reads back at most, by default, and at most with --pages. */

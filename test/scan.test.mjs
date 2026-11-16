@@ -36,6 +36,7 @@ import {
   parseRpm,
   parseTomlPackages,
   scan,
+  machineCommand,
   cronTable,
   launchdPlist,
   machinePath,
@@ -372,6 +373,8 @@ const API = "https://ws.test";
 function fakeWorldSignals() {
   const calls = [];
   const keys = new Map();
+  const pairs = new Map();
+  let polls = 0;
   const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
   const fetch = async (url, init = {}) => {
     const u = new URL(url);
@@ -383,6 +386,43 @@ function fakeWorldSignals() {
       if (b.token !== "wsm_good") return json({ error: "That enrolment token doesn't work." }, 401);
       keys.set("m_1", b.public_key);
       return json({ machine_id: "m_1", label: b.label ?? null, account: { name: "Ribeiro & Costa" } }, 201);
+    }
+    // The account's own API (ws machine …), with a bearer credential.
+    if (init.headers?.authorization === "Bearer acct") {
+      const route = `${init.method} ${u.pathname}`;
+      if (route === "GET /api/machines") return json({ machines: [...keys.keys()].map((m) => ({ id: m, label: "web-1", os: { label: "Debian 12" }, last_report_at: "2026-11-16T10:00:00Z", findings: { open: 3, exploited: 1 }, updates: 2, alerts_open: 1 })), limit: { plan: "developer", used: keys.size, limit: 10 } });
+      if (route === "GET /api/machines/tokens") return json({ tokens: [{ id: "mtk_1", label: null, used: 1, max_uses: 10, expires_at: "2099-01-01T00:00:00Z", revoked_at: null }] });
+      if (route === "POST /api/machines/tokens") return json({ id: "mtk_1", token: "wsm_good", uses: 10, expires_at: "2026-11-23T10:00:00Z", command: "npx worldsignals machine enrol --token wsm_good" }, 201);
+      if (route === "DELETE /api/machines/tokens/mtk_1") return json({ id: "mtk_1", revoked: true });
+      if (route === "POST /api/machines/approve") {
+        const pairing = [...pairs.values()].find((x) => x.code === JSON.parse(body).code);
+        if (!pairing) return json({ error: "No machine is waiting with that code." }, 404);
+        pairing.machine = "m_2";
+        keys.set("m_2", pairing.key);
+        return json({ machine_id: "m_2", label: pairing.label, os: { label: "Debian 12" } }, 201);
+      }
+      if (init.method === "DELETE" && u.pathname.startsWith("/api/machines/")) {
+        keys.delete(u.pathname.split("/").pop());
+        return json({ deleted: true });
+      }
+    }
+    if (u.pathname === "/api/machines/pair" && init.method === "POST") {
+      const b = JSON.parse(body);
+      pairs.set("mpr_1", { code: "BCDF-GHJK", key: b.public_key, label: b.label ?? null, machine: null });
+      return json({ pair_id: "mpr_1", code: "BCDF-GHJK", expires_at: new Date(Date.now() + 900_000).toISOString() }, 201);
+    }
+    if (u.pathname === "/api/machines/pair/mpr_1") {
+      const pairing = pairs.get("mpr_1");
+      const pub = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: pairing.key }, format: "jwk" });
+      const ok = verify(null, Buffer.from(`GET ${u.pathname} ${init.headers["x-ws-timestamp"]} `), pub, Buffer.from(init.headers["x-ws-signature"], "base64url"));
+      if (!ok) return json({ error: "bad signature" }, 401);
+      polls++;
+      // Approved on the second look, as if someone ran ws machine approve meanwhile.
+      if (polls >= 2 && !pairing.machine) {
+        pairing.machine = "m_2";
+        keys.set("m_2", pairing.key);
+      }
+      return json(pairing.machine ? { status: "approved", machine_id: pairing.machine } : { status: "pending" });
     }
     const id = init.headers["x-ws-machine"];
     const key = keys.get(id);
@@ -422,7 +462,7 @@ test("the upload carries names and versions only, never paths", () => {
 test("--alerts with no terminal and no --yes shows the list and sends nothing", async () => {
   const r = await alertsWith(["--alerts", "--token", "wsm_good"]);
   assert.equal(r.code, 2);
-  assert.match(r.out, /This is everything ws scan --alerts sends to WorldSignals \(POST https:\/\/ws\.test\/api\/machine\/report\)/);
+  assert.match(r.out, /This is everything that goes to WorldSignals \(POST https:\/\/ws\.test\/api\/machine\/report\)/);
   assert.match(r.out, /\{"source":"dpkg","ecosystem":"Ubuntu:24\.04:LTS","name":"openssl","version":"3\.0\.13-0ubuntu3\.1"\}/);
   assert.match(r.err, /Not sent: there is no terminal to ask/);
   assert.equal(r.ws.calls.length, 0);
@@ -505,7 +545,10 @@ test("schedule files for launchd, systemd and Task Scheduler", () => {
   assert.match(plist, /<string>scan<\/string><string>--upload<\/string>/);
   assert.match(plist, /<key>Hour<\/key><integer>10<\/integer><key>Minute<\/key><integer>7<\/integer><key>Weekday<\/key><integer>1<\/integer>/);
   const units = systemdUnits(spec);
-  assert.match(units.service, /^ExecStart='\/opt\/homebrew\/bin\/node' '\/opt\/homebrew\/lib\/node_modules\/worldsignals\/bin\/ws\.mjs' scan --upload$/m);
+  assert.match(units.service, /^ExecStart="\/opt\/homebrew\/bin\/node" "\/opt\/homebrew\/lib\/node_modules\/worldsignals\/bin\/ws\.mjs" scan --upload$/m);
+  // systemd's own quoting: $ and % doubled; cron's: % escaped.
+  assert.match(systemdUnits({ ...spec, node: "/opt/n$1/node", script: "/x/100%/ws.mjs" }).service, /^ExecStart="\/opt\/n\$\$1\/node" "\/x\/100%%\/ws\.mjs" scan --upload$/m);
+  assert.match(cronTable("", { ...spec, every: "daily", script: "/x/100%/ws.mjs" }), /'\/x\/100\\%\/ws\.mjs'/);
   assert.match(units.timer, /^OnCalendar=Mon \*-\*-\* 10:07:00$/m);
   assert.match(units.timer, /^Persistent=true$/m);
   assert.deepEqual(schtasksArgs({ ...spec, every: "daily", node: "C:\\node.exe", script: "C:\\ws.mjs" }), ["/Create", "/F", "/SC", "DAILY", "/ST", "10:07", "/TN", "WorldSignals scan", "/TR", '"C:\\node.exe" "C:\\ws.mjs" scan --upload']);
@@ -538,4 +581,75 @@ test("--schedule on Linux uses cron unless systemd keeps the user's timers runni
       assert.match(on.out, /systemd user timer/);
     }
   }
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// ws machine …: many machines from the command line.
+
+async function machineWith(argv, { ws = fakeWorldSignals(), env, credential = true, sysExtra = {}, uid } = {}) {
+  env ??= { HOME: mkdtempSync(join(tmpdir(), "ws-home-")), XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "ws-cache-")), WS_API: API, PATH: "/usr/bin", USER: "ana" };
+  const out = [];
+  const err = [];
+  const code = await machineCommand(argv, {
+    fetch: ws.fetch, env, out: (x) => out.push(x), err: (x) => err.push(x), platform: "linux", sys: { ...fakeMachine().sys, ...sysExtra }, version: "test", pause: async () => {},
+    credentialHeaders: credential ? () => ({ authorization: "Bearer acct" }) : null,
+    scriptPath: "/usr/local/lib/node_modules/worldsignals/bin/ws.mjs", nodePath: "/usr/local/bin/node", ...(uid !== undefined ? { uid } : {}),
+  });
+  return { code, out: out.join("\n"), err: err.join("\n"), ws, env };
+}
+
+test("ws machine token prints the line to run elsewhere, and --revoke stops it; ws machines lists both", async () => {
+  const t = await machineWith(["token", "--uses", "10", "--expires", "7d"]);
+  assert.equal(t.code, 0, t.err);
+  assert.match(t.out, /npx worldsignals machine enrol --token wsm_good/);
+  assert.equal(t.ws.calls[0].body.days, 7);
+  const list = await machineWith(["list"], { ws: t.ws });
+  assert.match(list.out, /0 machines of 10 on the developer plan/);
+  assert.match(list.out, /mtk_1 .*1 of 10 used/);
+  const r = await machineWith(["token", "--revoke", "mtk_1"], { ws: t.ws });
+  assert.match(r.out, /Revoked/);
+  const none = await machineWith(["list"], { credential: false });
+  assert.equal(none.code, 2);
+  assert.match(none.err, /signup .*connect.*WS_KEY/);
+});
+
+test("ws machine enrol --token (or WS_ENROL_TOKEN) enrols, sends and schedules daily; remove forgets it here too", async () => {
+  let table = "";
+  const sysExtra = { run: async (cmd, args) => (cmd === "crontab" ? table : cmd === "loginctl" || cmd === "systemctl" ? null : fakeMachine().sys.run(cmd, args)), runWithInput: async (cmd, args, input) => ((table = input), true) };
+  const env = { HOME: mkdtempSync(join(tmpdir(), "ws-home-")), XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "ws-cache-")), WS_API: API, PATH: "/usr/bin", USER: "ana", WS_ENROL_TOKEN: "wsm_good" };
+  const e = await machineWith(["enrol", "--yes"], { env, sysExtra });
+  assert.equal(e.code, 0, e.err);
+  assert.equal(readMachine(env, API).machine_id, "m_1");
+  assert.equal(readMachine(env, API).schedule, "daily");
+  assert.match(table, /scan --upload/);
+  const rm = await machineWith(["remove", "mch_" + "1".repeat(32)], { ws: e.ws, env, sysExtra });
+  assert.equal(rm.code, 0, rm.err);
+  assert.match(rm.out, /Removed/);
+});
+
+test("ws machine add shows a code, waits for approval, then sends the list signed with its own key", async () => {
+  const a = await machineWith(["add", "--label", "db-1", "--yes"]);
+  assert.equal(a.code, 0, a.err);
+  assert.match(a.out, /ws machine approve BCDF-GHJK/);
+  assert.match(a.out, /Approved\. db-1 is enrolled/);
+  assert.equal(readMachine(a.env, API).machine_id, "m_2");
+  assert.equal(a.ws.calls.at(-1).path, "/api/machine/report");
+  assert.equal(a.ws.calls.at(-1).headers["x-ws-machine"], "m_2");
+});
+
+test("ws machine approve <code> adds the waiting machine", async () => {
+  const ws = fakeWorldSignals();
+  await machineWith(["add", "--yes"], { ws });
+  const ok = await machineWith(["approve", "nope"], { ws });
+  assert.equal(ok.code, 1);
+  assert.match(ok.err, /No machine is waiting/);
+});
+
+test("scheduling as root refuses a script others can change", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_good", "--yes"]);
+  const out = [];
+  const err = [];
+  const code = await scan(["--schedule", "daily"], { fetch: r.ws.fetch, env: r.env, out: (x) => out.push(x), err: (x) => err.push(x), platform: "linux", sys: fakeMachine().sys, uid: 0, scriptPath: join(tmpdir(), "not-root-owned-ws.mjs"), nodePath: process.execPath });
+  assert.equal(code, 2);
+  assert.match(err.join("\n"), /runs as root/);
 });

@@ -237,6 +237,20 @@ name are sent. To get it:
 3. `ws scan --forget` deletes the machine and its list at WorldSignals, and stops the schedule. `--yes` sends
    without asking, for scripts and device management.
 
+**Many machines, from the command line.** No web console is needed:
+
+```sh
+ws signup && ws upgrade                       # on the paying machine
+ws machine token --uses 10 --expires 7d       # prints: npx worldsignals machine enrol --token wsm_…
+WS_ENROL_TOKEN=wsm_… npx worldsignals machine enrol --yes   # on each machine: by hand, MDM, GPO or Ansible
+ws machines                                   # list them, and the tokens still working
+ws machine remove <id>; ws machine token --revoke <id>
+```
+
+To add a single machine without a token, run `ws machine add` on it, then `ws machine approve <code>` wherever your
+account is signed in. Keep tokens like passwords: anyone with one can add machines to your account until it runs
+out. Each added machine shows up in `ws machines`, where you can remove it.
+
 Windows programs aren't read yet. `--here` adds the lockfiles in the current folder (`package-lock.json`,
 `requirements.txt`, `Cargo.lock`, `poetry.lock`, `uv.lock`, `Gemfile.lock`, `composer.lock`). `--report scan.md`
 writes every vulnerability with its score, fix and link, and `--json` gives the same as one object.

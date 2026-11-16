@@ -1413,6 +1413,30 @@ function refusal(r, p) {
   return `WorldSignals answered ${r.status}${r.body.error ? `: ${r.body.error}` : ""}.`;
 }
 
+/**
+ * Shows exactly what will be sent and asks: true to go on, or the exit code (0 when declined or a dry run, 2 when
+ * there is no terminal to ask and no --yes).
+ */
+async function showAndAsk(ctx, values, payload, question) {
+  const { out, err, p = "ws", api } = ctx;
+  out(`This is everything that goes to WorldSignals (POST ${api}/api/machine/report):\n`);
+  out(shownPayload(payload));
+  out(`\n${plural(payload.items.length, "item")}: for each, where it came from, its name and version (and, for apps, the product names it is matched by). No file paths, user names, host name or serial number.`);
+  out(`WorldSignals keeps the latest list for as long as the machine reports, matches it against every new vulnerability, and alerts the account it is enrolled in. ${p} scan --forget deletes it.`);
+  if (values["dry-run"]) {
+    out(`\n--dry-run: nothing was sent.`);
+    return 0;
+  }
+  if (values.yes) return true;
+  const yes = await askYes(ctx.stdin, `\n${question} [y/N] `, err);
+  if (yes === null) {
+    err(`Not sent: there is no terminal to ask. After checking the list (--dry-run), add --yes to send it.`);
+    return 2;
+  }
+  if (!yes) out("Nothing was sent.");
+  return yes ? true : 0;
+}
+
 /** ws scan --alerts (enrol if needed, show, ask, send) and --upload (send, as the schedule does). */
 async function sendInventory(ctx, values, inv) {
   const { env, out, err, p = "ws", api } = ctx;
@@ -1426,28 +1450,13 @@ async function sendInventory(ctx, values, inv) {
       return 2;
     }
   } else {
-    out(`This is everything ${p} scan --alerts sends to WorldSignals (POST ${reportUrl}):\n`);
-    out(shownPayload(payload));
-    out(`\n${plural(payload.items.length, "item")}: for each, where it came from, its name and version (and, for apps, the product names it is matched by). No file paths, user names, host name or serial number.`);
-    out(`WorldSignals keeps the latest list for as long as the machine reports, matches it against every new vulnerability, and alerts the account it is enrolled in. ${p} scan --forget deletes it.`);
-    if (values["dry-run"]) {
-      out(`\n--dry-run: nothing was sent.`);
-      return 0;
-    }
-    if (!values.yes) {
-      const yes = await askYes(ctx.stdin, `\nSend it${entry ? "" : " and enrol this machine"}? [y/N] `, err);
-      if (yes === null) {
-        err(`Not sent: there is no terminal to ask. After checking the list (${p} scan --alerts --dry-run), add --yes to send it.`);
-        return 2;
-      }
-      if (!yes) {
-        out("Nothing was sent.");
-        return 0;
-      }
-    }
+    const agreed = await showAndAsk(ctx, values, payload, entry ? "Send it?" : "Send it and enrol this machine?");
+    if (agreed !== true) return agreed;
   }
 
   if (!entry) {
+    // The token may come from the environment, to keep it out of the process list and the shell's history.
+    values = { ...values, token: values.token ?? (env.WS_ENROL_TOKEN || undefined) };
     const credential = values.token ? { headers: () => ({}) } : ctx.credentialHeaders ? { headers: ctx.credentialHeaders } : null;
     if (!credential || (!values.token && !ctx.credentialHeaders?.("POST", `${api}/api/machines/enrol`, "{}"))) {
       err(
@@ -1544,11 +1553,15 @@ export function launchdPlist({ node, script, every, hour, minute, log }) {
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+/** A word for systemd's ExecStart: its own quoting, where $ and % mean something too. */
+const sdq = (s) => `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "$$$$").replace(/%/g, "%%")}"`;
+/** A word for a crontab line: the shell's quoting, and cron turns a bare % into a new line. */
+const cronq = (s) => shq(s).replace(/%/g, "\\%");
 
 export function systemdUnits({ node, script, every, hour, minute }) {
   const calendar = `${every === "weekly" ? "Mon " : ""}*-*-* ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`;
   return {
-    service: `[Unit]\nDescription=WorldSignals: send this machine's software list for vulnerability alerts\n\n[Service]\nType=oneshot\nExecStart=${shq(node)} ${shq(script)} scan --upload\n`,
+    service: `[Unit]\nDescription=WorldSignals: send this machine's software list for vulnerability alerts\n\n[Service]\nType=oneshot\nExecStart=${sdq(node)} ${sdq(script)} scan --upload\n`,
     timer: `[Unit]\nDescription=WorldSignals scan, ${every}\n\n[Timer]\nOnCalendar=${calendar}\nPersistent=true\nRandomizedDelaySec=15min\n\n[Install]\nWantedBy=timers.target\n`,
   };
 }
@@ -1556,7 +1569,7 @@ export function systemdUnits({ node, script, every, hour, minute }) {
 /** The crontab with our line replaced (or removed, with every = off). */
 export function cronTable(current, { node, script, every, hour, minute }) {
   const kept = String(current ?? "").split("\n").filter((l) => l && !l.includes(CRON_MARK));
-  if (every !== "off") kept.push(`${minute} ${hour} * * ${every === "weekly" ? "1" : "*"} ${shq(node)} ${shq(script)} scan --upload >/dev/null 2>&1 ${CRON_MARK}`);
+  if (every !== "off") kept.push(`${minute} ${hour} * * ${every === "weekly" ? "1" : "*"} ${cronq(node)} ${cronq(script)} scan --upload >/dev/null 2>&1 ${CRON_MARK}`);
   return kept.length ? `${kept.join("\n")}\n` : "";
 }
 
@@ -1564,6 +1577,24 @@ export function schtasksArgs({ node, script, every, hour, minute }) {
   if (every === "off") return ["/Delete", "/F", "/TN", "WorldSignals scan"];
   const at = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   return ["/Create", "/F", "/SC", every === "weekly" ? "WEEKLY" : "DAILY", ...(every === "weekly" ? ["/D", "MON"] : []), "/ST", at, "/TN", "WorldSignals scan", "/TR", `"${node}" "${script}" scan --upload`];
+}
+
+/**
+ * Whether scheduling as root would run a file someone else can change: node or the script not owned by root, or
+ * writable by its group or everyone. Never on Windows (Task Scheduler runs it as the user who made the task).
+ */
+function rootRisk(node, script, ctx) {
+  const uid = ctx.uid ?? (typeof process.getuid === "function" ? process.getuid() : null);
+  if (uid !== 0) return false;
+  for (const path of [node, script]) {
+    try {
+      const st = statSync(path);
+      if (st.uid !== 0 || st.mode & 0o022) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Runs a program with text on its stdin (crontab -). */
@@ -1590,6 +1621,17 @@ async function scheduleScan(ctx, every) {
   }
   const node = ctx.nodePath ?? process.execPath;
   const script = ctx.scriptPath ?? process.argv[1] ?? "";
+  if (every !== "off" && /[\u0000-\u001f\u007f]/.test(`${node}${script}`)) {
+    err("The path to node or to ws has a control character in it; scheduling it isn't safe. Install it somewhere plain.");
+    return 2;
+  }
+  if (every !== "off" && rootRisk(node, script, ctx)) {
+    err(
+      `Not scheduled: this runs as root, and ${script} (or node) can be changed by someone other than root, which would then run as root every day. ` +
+        `Schedule it as the user who installed it, or install it where only root can write (e.g. sudo npm install -g worldsignals with a root-owned prefix).`,
+    );
+    return 2;
+  }
   if (every !== "off" && /[\\/]_npx[\\/]/.test(script)) {
     err(`npx runs ws from a temporary folder that won't last. Install it first, then schedule:\n  npm install -g worldsignals\n  ws scan --schedule ${every}`);
     return 2;
@@ -1666,5 +1708,222 @@ async function scheduleScan(ctx, every) {
     else out(`Scheduled ${every} at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}${every === "weekly" ? " on Mondays" : ""}, as you, with ${how}: it re-reads what is installed and sends the list. ${p} scan --schedule off stops it.`);
   }
   return 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// ws machine … and ws machines: add and manage many machines from the command line, no web console needed.
+//   On the paying machine: ws signup, ws upgrade, then ws machine token (prints the line to run elsewhere).
+//   On each other machine: ws machine enrol --token … (by hand, or through MDM, GPO or Ansible with --yes).
+//   For a few machines: ws machine add on the new one, ws machine approve <code> on the paying one.
+//   ws machines lists them and the tokens; ws machine remove <id>, ws machine token --revoke <id>.
+
+export const MACHINE_HELP = (p = "ws") => `${p} machines [--json]
+      The machines enrolled in your account: last report, known vulnerabilities, exploited, updates, alerts;
+      and the enrolment tokens still working.
+${p} machine token [--uses <n>] [--expires <days>d] [--label <name>] [--json]
+      Make an enrolment token (default 25 machines, 7 days) and print the line to run on each machine:
+        npx worldsignals machine enrol --token wsm_…
+      --revoke <id>     stop a token working
+${p} machine enrol --token <token> [--label <name>] [--yes] [--schedule daily|weekly|off]
+      Enrol this machine with a token: shows what it sends and asks (--yes for MDM, GPO, Ansible), sends it, and
+      schedules the daily check (as ${p} scan --schedule; default daily).
+${p} machine add [--label <name>] [--yes]
+      No token: shows a code; approve it on a machine signed in to your account with ${p} machine approve <code>.
+${p} machine approve <code>
+      Add the machine showing that code to your account.
+${p} machine remove <id>
+      Remove a machine and everything it sent.
+These use the agent key on this device (${p} signup) or an access key (WS_KEY); a connected agent needs the
+Machines permission to change anything.`;
+
+function needCredential(ctx) {
+  if (ctx.credentialHeaders) return null;
+  const p = ctx.p ?? "ws";
+  ctx.err(`This needs your account on this device: ${p} signup (then ${p} upgrade), ${p} connect, or WS_KEY=<access key>.`);
+  return 2;
+}
+const accountCall = (ctx, method, path, payload) => callApi(ctx, method, path, payload, (m, url, body) => ctx.credentialHeaders(m, url, body) ?? {});
+const days = (v) => {
+  const m = String(v ?? "").match(/^(\d+)d?$/);
+  return m ? Number(m[1]) : NaN;
+};
+
+/** ws machine <what> and ws machines. */
+export async function machineCommand(argv, ctx) {
+  const { out, err, p = "ws", env } = ctx;
+  const api = (env.WS_API || "https://worldsignals.dev").replace(/\/$/, "");
+  const c = { ...ctx, api };
+  const [what, ...rest] = argv;
+  let values;
+  let positionals;
+  try {
+    ({ values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: { json: { type: "boolean" }, uses: { type: "string" }, expires: { type: "string" }, label: { type: "string" }, revoke: { type: "string" }, token: { type: "string" }, yes: { type: "boolean" }, schedule: { type: "string" }, "dry-run": { type: "boolean" }, help: { type: "boolean", short: "h" } },
+      strict: true,
+    }));
+  } catch (e) {
+    err(`${e.message}\n\n${MACHINE_HELP(p)}`);
+    return 2;
+  }
+  if (!what || what === "help" || values.help) {
+    out(MACHINE_HELP(p));
+    return 0;
+  }
+  const failed = (r) => {
+    err(r.body.error ?? `WorldSignals answered ${r.status}.`);
+    return 1;
+  };
+
+  if (what === "list") {
+    const no = needCredential(c);
+    if (no) return no;
+    const r = await accountCall(c, "GET", "/api/machines");
+    if (r.status >= 400) return failed(r);
+    const t = await accountCall(c, "GET", "/api/machines/tokens");
+    if (values.json) {
+      out(JSON.stringify({ ...r.body, tokens: t.body.tokens ?? [] }));
+      return 0;
+    }
+    const { machines, limit } = r.body;
+    out(`${plural(limit.used, "machine")} of ${limit.limit} on the ${limit.plan} plan.`);
+    for (const m of machines) {
+      const name = m.label ?? m.os?.label ?? "(no name)";
+      out(`  ${m.id}  ${name}  ·  ${m.os?.label ?? ""}  ·  last report ${m.last_report_at ? m.last_report_at.slice(0, 16).replace("T", " ") : "never"}  ·  ${m.findings.open} known, ${m.findings.exploited} exploited, ${m.updates} updates, ${m.alerts_open} open alerts`);
+    }
+    const live = (t.body.tokens ?? []).filter((x) => !x.revoked_at && x.expires_at > new Date().toISOString() && x.used < x.max_uses);
+    if (live.length) {
+      out(`Enrolment tokens still working:`);
+      for (const x of live) out(`  ${x.id}  ${x.label ?? ""}  ${x.used} of ${x.max_uses} used, until ${x.expires_at.slice(0, 10)}  (${p} machine token --revoke ${x.id})`);
+    }
+    return 0;
+  }
+
+  if (what === "token") {
+    const no = needCredential(c);
+    if (no) return no;
+    if (values.revoke) {
+      const r = await accountCall(c, "DELETE", `/api/machines/tokens/${encodeURIComponent(values.revoke)}`);
+      if (r.status >= 400) return failed(r);
+      out(`Revoked: ${values.revoke} no longer enrols machines.`);
+      return 0;
+    }
+    const body = { ...(values.uses ? { uses: Number(values.uses) } : {}), ...(values.expires ? { days: days(values.expires) } : {}), ...(values.label ? { label: values.label } : {}) };
+    const r = await accountCall(c, "POST", "/api/machines/tokens", body);
+    if (r.status >= 400) return failed(r);
+    if (values.json) {
+      out(JSON.stringify(r.body));
+      return 0;
+    }
+    out(`An enrolment token for up to ${r.body.uses} machines, until ${r.body.expires_at.slice(0, 10)}. Run this on each machine (it shows what it sends and asks; add --yes for MDM or scripts):\n`);
+    out(`  ${r.body.command}\n`);
+    out(`Keep it like a password: anyone with it can add machines to your account until it runs out. ${p} machines lists them; ${p} machine token --revoke ${r.body.id} stops it.`);
+    return 0;
+  }
+
+  if (what === "enrol" || what === "enroll") {
+    values.token ??= env.WS_ENROL_TOKEN || undefined;
+    if (!values.token) {
+      err(`${p} machine enrol needs --token <token>, or WS_ENROL_TOKEN set (from ${p} machine token, or Machines → Add a machine in the console). Without one: ${p} machine add.`);
+      return 2;
+    }
+    const every = values.schedule ?? "daily";
+    if (!["daily", "weekly", "off"].includes(every)) {
+      err("--schedule is daily, weekly or off.");
+      return 2;
+    }
+    const code = await scan(["--alerts", "--token", values.token, ...(values.label ? ["--label", values.label] : []), ...(values.yes ? ["--yes"] : []), ...(values["dry-run"] ? ["--dry-run"] : [])], ctx);
+    if (code !== 0 || values["dry-run"] || !readMachine(env, api) || every === "off") return code;
+    await scheduleScan({ ...c, platform: ctx.platform ?? process.platform }, every);
+    return 0;
+  }
+
+  if (what === "approve") {
+    const no = needCredential(c);
+    if (no) return no;
+    const code = positionals[0];
+    if (!code) {
+      err(`${p} machine approve <code>: the code ${p} machine add shows on the new machine.`);
+      return 2;
+    }
+    const r = await accountCall(c, "POST", "/api/machines/approve", { code });
+    if (r.status >= 400) return failed(r);
+    out(`Added ${r.body.label ?? "the machine"}${r.body.os?.label ? ` (${r.body.os.label})` : ""} to your account: ${r.body.machine_id}. It sends its list now and gets alerts from here on.`);
+    return 0;
+  }
+
+  if (what === "remove") {
+    const no = needCredential(c);
+    if (no) return no;
+    const id = positionals[0];
+    if (!/^mch_[0-9a-f]{32}$/.test(id ?? "")) {
+      err(`${p} machine remove <id>: the machine's id, as ${p} machines lists it (mch_…).`);
+      return 2;
+    }
+    const r = await accountCall(c, "DELETE", `/api/machines/${id}`);
+    if (r.status >= 400) return failed(r);
+    // This machine itself: forget its key and stop its schedule too.
+    if (readMachine(env, api)?.machine_id === id) {
+      await scheduleScan({ ...c, quiet: true, platform: ctx.platform ?? process.platform }, "off");
+      saveMachine(env, api, null);
+    }
+    out(`Removed ${id} and everything it sent.`);
+    return 0;
+  }
+
+  if (what === "add") return pairThisMachine(c, values);
+
+  err(`Unknown: ${p} machine ${what}.\n\n${MACHINE_HELP(p)}`);
+  return 2;
+}
+
+/** The headers that sign a request with a key alone (pairing, before the machine has an id). */
+function keyHeaders(method, url, privateKeyPem, now = Date.now()) {
+  lastSigned = Math.max(Math.floor(now), lastSigned + 1);
+  const timestamp = (lastSigned / 1000).toFixed(3);
+  const u = new URL(url);
+  return { "x-ws-timestamp": timestamp, "x-ws-signature": sign(null, Buffer.from(`${method} ${u.pathname}${u.search} ${timestamp} `), createPrivateKey(privateKeyPem)).toString("base64url") };
+}
+
+/** ws machine add: show what it sends, ask, show a code, wait for it to be approved, then send. */
+async function pairThisMachine(ctx, values) {
+  const { env, out, err, p = "ws", api } = ctx;
+  if (readMachine(env, api)) {
+    out(`This machine is already enrolled. ${p} scan --upload sends its list now; ${p} scan --forget removes it.`);
+    return 0;
+  }
+  const inv = await gather({ platform: ctx.platform ?? process.platform, env, sys: ctx.sys });
+  const payload = uploadPayload(inv, ctx.version ?? "");
+  const agreed = await showAndAsk(ctx, values, payload, "Add this machine and send it once approved?");
+  if (agreed !== true) return agreed;
+  const key = newMachineKey();
+  const start = await callApi(ctx, "POST", "/api/machines/pair", { public_key: key.publicKey, os: payload.os, consent: true, ...(values.label ? { label: values.label } : {}) }, () => ({}));
+  if (start.status >= 400) {
+    err(start.body.error ?? `WorldSignals answered ${start.status}.`);
+    return 1;
+  }
+  out(`\nOn a machine signed in to your account, run:\n\n  ${p} machine approve ${start.body.code}\n\nThe code works for 15 minutes. Waiting…`);
+  const pause = ctx.pause ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const until = Date.parse(start.body.expires_at);
+  for (;;) {
+    await pause(3000);
+    const r = await callApi(ctx, "GET", `/api/machines/pair/${start.body.pair_id}`, undefined, (m, url) => keyHeaders(m, url, key.privateKey));
+    if (r.body.status === "approved") {
+      const entry = { machine_id: r.body.machine_id, private_key: key.privateKey, label: values.label ?? null, account: null, enrolled_at: new Date().toISOString() };
+      saveMachine(env, api, entry);
+      const sent = await machineCall(ctx, entry, "POST", "/api/machine/report", payload);
+      if (sent.status >= 400) {
+        err(`Approved, but the list wasn't sent: ${refusal(sent, p)} ${p} scan --upload tries again.`);
+        return 1;
+      }
+      out(`Approved. ${entry.label ?? "This machine"} is enrolled and its list is sent. To keep it current: ${p} scan --schedule daily.`);
+      return 0;
+    }
+    if (r.body.status === "expired" || r.status === 404 || Date.now() > until + 60_000) {
+      err(`The code expired before it was approved. Run ${p} machine add again.`);
+      return 1;
+    }
+  }
 }
 
