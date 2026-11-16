@@ -1410,7 +1410,8 @@ function refusal(r, p) {
   if (r.status === 402) return r.body.error ?? `This account's plan has no room for another machine. Remove one in the console, or upgrade.`;
   if (r.status === 401 || r.status === 410) return r.body.error ?? `WorldSignals no longer knows this machine (it was removed in the console). ${p} scan --alerts enrols it again.`;
   if (r.status === 403) return r.body.error ?? "That key may not enrol machines: it needs the Machines permission.";
-  return `WorldSignals answered ${r.status}${r.body.error ? `: ${r.body.error}` : ""}.`;
+  if (r.status === 429) return r.body.error ?? "Too many requests just now: wait a minute and try again.";
+  return r.body.error ? String(r.body.error) : `WorldSignals answered ${r.status}.`;
 }
 
 /**
