@@ -1,6 +1,6 @@
 {
   "name": "worldsignals-scan",
-  "version": "0.5.5",
+  "version": "0.6.0",
   "description": "Check this computer for known and actively exploited vulnerabilities, free: one command, the fix for each in plain language, nothing sent without asking. Homebrew, macOS apps, apt/rpm/apk packages, npm and pip. Optional alerts when a new CVE hits one of your machines.",
   "type": "module",
   "bin": {
