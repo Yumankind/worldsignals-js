@@ -56,6 +56,9 @@ Your agent:
       --force            replace the agent key already on this device (the old one can't be used again)
       --json             the new agent as one JSON object: {status, agent_id, name, key_file, next}
 
+  ${p} upgrade --machines <n> [--yes]
+      Pay for <n> machines beyond the ones your plan includes (Developer 5, Team 50, Business 250), at €2 a
+      month each, for vulnerability alerts (${p} scan --alerts). Shows the cost and asks; 0 removes them.
   ${p} upgrade [--plan developer|team|business] [--yearly] [--wait] [--no-open] [--json]
       Print a Stripe payment link for the agent's own plan (default: developer, monthly) and open it in
       the browser. Whoever pays gives Stripe their email, for receipts, and can manage the subscription
@@ -177,6 +180,25 @@ Events (signed with the agent key; or send a named or personal access key with -
       --state <file>     where to remember the last event handled (default ~/.config/worldsignals/watch.json);
                          give each watcher its own
       --once             handle what is waiting, then exit: for cron and scheduled jobs
+
+This machine (no account or key needed):
+  ${p} scan [--report <file.md>] [--json] [--dry-run] [--here] [--nvd] [--inventory] [--unchecked]
+      Check the software installed here against public vulnerability databases (OSV.dev, CISA's exploited list,
+      endoflife.date) and say in plain language what to update: what is exploited right now first, then the
+      one upgrade that fixes each group, then what no longer gets security fixes. Free and complete. Sends
+      package names and versions to OSV.dev and product names to endoflife.date, nothing to WorldSignals;
+      --dry-run shows every request and sends none. ${p} scan --help lists the options.
+  ${p} scan --alerts [--token <token>]
+      Opt in: WorldSignals keeps this machine's list of names and versions and tells your account when a new
+      vulnerability hits it. Shows every line before sending. --schedule daily keeps it current; --forget deletes it.
+
+Many machines, from the command line (no web console needed):
+  ${p} machine token [--uses <n>] [--expires <days>d]   an enrolment token, and the line to run on each machine
+  ${p} machine enrol --token <token> [--yes]           enrol this machine with it (token also from WS_ENROL_TOKEN)
+  ${p} machine add, then ${p} machine approve <code>     a few machines, no token: approve the code it shows
+  ${p} machines [--json]                              list them, with the tokens still working
+  ${p} machine remove <id>, ${p} machine token --revoke <id>
+      ${p} machine help has the details.
 
 Plan a stream (types and fields need no key):
   ${p} types [--family <ids>] [--json]
@@ -692,6 +714,9 @@ export async function run(
   if (command === "fields") return fieldsCommand(rest, ctx);
   if (command === "estimate") return estimateCommand(rest, ctx);
   if (command === "api") return apiCommand(rest, ctx);
+  if (command === "scan") return scanCommand(rest, ctx);
+  if (command === "machines") return scanCommand(["list", ...rest], ctx, "machineCommand");
+  if (command === "machine") return scanCommand(rest, ctx, "machineCommand");
 
   if (command === "events") return eventsCommand(rest, ctx);
 
@@ -699,6 +724,32 @@ export async function run(
 
   err(`Unknown command "${command}". Run ${p} help.`);
   return 2;
+}
+
+/**
+ * ws scan lives in scan.mjs, next to this file, loaded only when it runs (the npm package has both). Someone who
+ * downloaded ws.mjs alone is told where to get the other one.
+ */
+async function scanCommand(rest, ctx, entry = "scan") {
+  let mod;
+  try {
+    mod = await import("./scan.mjs");
+  } catch (e) {
+    if (e?.code !== "ERR_MODULE_NOT_FOUND") throw e;
+    ctx.err(
+      `${ctx.p} scan needs scan.mjs in the same folder as ws.mjs. Download it from ${DEFAULT_API}/cli/scan.mjs, or run\n` +
+        `  npx worldsignals scan`,
+    );
+    return 2;
+  }
+  // Enrolling a machine for alerts (--alerts) without a token signs with the access key or the agent key, as other
+  // commands do; the schedule runs this same file, so it needs its real path.
+  const cred = credentials({}, ctx.env, ctx.api);
+  let scriptPath = process.argv[1];
+  try {
+    scriptPath = realpathSync(process.argv[1]);
+  } catch {}
+  return mod[entry](rest, { ...ctx, version: VERSION, credentialHeaders: cred ? (method, url, body) => cred.headers(method, url, body) : null, scriptPath });
 }
 
 /** Pages ws events reads back at most, by default, and at most with --pages. */
@@ -1034,12 +1085,73 @@ async function waitForApproval(ctx, privateKey, agentId, flow) {
 
 // ws upgrade: POST /api/agent/checkout, a Stripe Checkout link for the agent's own plan. With --key or WS_KEY,
 // POST /api/billing/checkout for that personal access key's account, as before agent accounts.
+/**
+ * ws upgrade --machines <n>: how many extra machines the paid plan pays for, beyond the ones it includes (€2 a month
+ * each). Shows what it costs and asks before changing anything; --yes for scripts. 0 removes them.
+ */
+async function extraMachines(ctx, values) {
+  const { out, err, p, env, api, fetch } = ctx;
+  const n = Number(values.machines);
+  if (!Number.isInteger(n) || n < 0) {
+    err(`--machines is how many extra machines to pay for, beyond the ones your plan includes (0 removes them), e.g. ${p} upgrade --machines 10.`);
+    return 2;
+  }
+  const cred = credentials(values, env, api);
+  if (!cred) {
+    err(needsKey(p, "upgrade --machines"));
+    return 2;
+  }
+  const call = async (body) => {
+    const url = `${api}/api/billing/machines`;
+    const text = JSON.stringify(body);
+    const res = await fetch(url, { method: "POST", headers: { "user-agent": `ws-cli/${VERSION}`, "content-type": "application/json", ...cred.headers("POST", url, text) }, body: text });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+  const quote = await call({ machines: n });
+  if (quote.status >= 400) {
+    err(quote.body.error ?? `WorldSignals answered ${quote.status}.`);
+    return 1;
+  }
+  const q = quote.body;
+  const money = (cents) => (cents === null || cents === undefined ? "?" : new Intl.NumberFormat("en-GB", { style: "currency", currency: String(q.currency).toUpperCase() }).format(cents / 100));
+  if (values.json && !values.yes) {
+    out(JSON.stringify(q));
+    return 0;
+  }
+  out(
+    `Your ${q.plan} plan includes ${q.included} machines. ${n === q.extra_now ? `It already pays for ${n} extra; nothing to change.` : `${n} extra at ${money(q.unit_amount)} a ${q.interval} each: ${money(q.total)} a ${q.interval}, VAT on top where it applies, billed with your plan and prorated from today. Your limit becomes ${q.limit} machines.`}${q.test_mode ? " (Stripe test mode.)" : ""}`,
+  );
+  if (n === q.extra_now) return 0;
+  if (!values.yes) {
+    if (!ctx.stdin) {
+      err(`Not changed: there is no terminal to ask. Add --yes to confirm.`);
+      return 2;
+    }
+    err(`Change the subscription? [y/N] `);
+    const rl = createInterface({ input: ctx.stdin, terminal: false });
+    const line = await new Promise((resolve) => rl.once("line", resolve).once("close", () => resolve("")));
+    rl.close();
+    if (!/^y(es)?$/i.test(String(line).trim())) {
+      out("Nothing changed.");
+      return 0;
+    }
+  }
+  const done = await call({ machines: n, confirm: true });
+  if (done.status >= 400) {
+    err(done.body.error ?? `WorldSignals answered ${done.status}.`);
+    return 1;
+  }
+  out(values.json ? JSON.stringify(done.body) : `Done: your plan now covers ${done.body.limit} machines (${done.body.included} included, ${done.body.extra} extra). ${p} billing shows the invoice.`);
+  return 0;
+}
+
 async function payCommand(rest, ctx) {
   const { out, err, p, env, spawn, platform, pause, signal } = ctx;
   const { values } = parseArgs({
     args: rest,
-    options: { plan: { type: "string" }, yearly: { type: "boolean" }, billing: { type: "string" }, wait: { type: "boolean" }, "no-open": { type: "boolean" }, key: { type: "string" }, json: { type: "boolean" } },
+    options: { plan: { type: "string" }, yearly: { type: "boolean" }, billing: { type: "string" }, wait: { type: "boolean" }, "no-open": { type: "boolean" }, key: { type: "string" }, json: { type: "boolean" }, machines: { type: "string" }, yes: { type: "boolean" } },
   });
+  if (values.machines !== undefined) return extraMachines(ctx, values);
   const plan = (values.plan ?? "developer").toLowerCase();
   const billing = values.yearly ? "yearly" : (values.billing ?? "monthly");
   if (!PLAN_IDS.includes(plan) || !["monthly", "yearly"].includes(billing)) {

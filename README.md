@@ -190,8 +190,72 @@ command.
 | `request` | Ask for data that isn't collected yet (`--countries`, `--use`, `--source`, `--json`) |
 | `feedback` | Tell us about a bug, a problem or an idea (`--kind` bug, problem or idea; `--json`) |
 | `api` | Any call to the WorldSignals API under `/api/`, signed as the other commands sign (`--raw`) |
+| `scan` | Check the software installed on this machine against public vulnerability databases, and say what to update (`--report`, `--json`, `--dry-run`, `--here`, `--nvd`, `--inventory`). No account needed |
 
 `npx worldsignals help` has every option. `WS_API` points the tool at another server, for testing.
+
+## Check this machine
+
+```sh
+npx worldsignals scan
+```
+
+The scanner is also published on its own, as [`worldsignals-scan`](https://www.npmjs.com/package/worldsignals-scan) (`npx worldsignals-scan`): the same code, for people who want only the security check.
+
+`scan` lists what is installed and checks it against public vulnerability databases. It reads Homebrew and the
+apps in `/Applications` on macOS; dpkg, rpm, apk, snap and flatpak on Linux; and global npm and pip packages
+everywhere. Then it says, in plain language:
+
+- what is being exploited right now, first, from CISA's list of exploited vulnerabilities;
+- the one upgrade that fixes each group, with the command or menu to use;
+- what no longer gets security fixes (endoflife.date).
+
+Every finding is free and shown in full, and no account is needed. It needs no admin rights.
+
+**What leaves the machine.** Package names and versions go to [OSV.dev](https://osv.dev) (run by Google), and
+product names such as `nodejs` go to endoflife.date. CISA's catalogue is downloaded whole, so nothing is sent
+there. Nothing goes to WorldSignals. `--dry-run` prints every request and its exact body, and sends none.
+`--inventory` lists what is installed and makes no request at all.
+
+**How it matches.**
+- **Linux distribution packages** are checked against the distribution's own advisories (Debian, Ubuntu,
+  Alpine, Rocky, AlmaLinux), which know when a fix was backported without changing the version number.
+- **Language packages** (npm, PyPI) are checked against OSV.dev.
+- **Desktop apps and Homebrew formulae** (Chrome, Firefox, Zoom, VS Code, OpenSSL and about 40 others) are checked
+  only with `--nvd`, by version number against NVD. That sends each one's name and version to NIST, and takes
+  about 7 seconds per app without an `NVD_API_KEY`.
+
+**Alerts for this machine (opt-in).** `ws scan --alerts` enrols the machine in your WorldSignals account and sends
+the list of names and versions, after showing every line of it and asking. WorldSignals then matches the list
+against each new vulnerability and tells you when one hits something installed. No file paths, user names or host
+name are sent. To get it:
+
+1. Make an enrolment token in the console under Machines → Add a machine, then run
+   `ws scan --alerts --token <token>`.
+2. `ws scan --schedule daily` keeps the list current, running as you with no admin rights: launchd on macOS, a
+   systemd user timer (when lingering is on) or else cron on Linux, Task Scheduler on Windows. Scheduling needs
+   `npm install -g worldsignals`
+   rather than npx.
+3. `ws scan --forget` deletes the machine and its list at WorldSignals, and stops the schedule. `--yes` sends
+   without asking, for scripts and device management.
+
+**Many machines, from the command line.** No web console is needed:
+
+```sh
+ws signup && ws upgrade                       # on the paying machine
+ws machine token --uses 10 --expires 7d       # prints: npx worldsignals machine enrol --token wsm_…
+WS_ENROL_TOKEN=wsm_… npx worldsignals machine enrol --yes   # on each machine: by hand, MDM, GPO or Ansible
+ws machines                                   # list them, and the tokens still working
+ws machine remove <id>; ws machine token --revoke <id>
+```
+
+To add a single machine without a token, run `ws machine add` on it, then `ws machine approve <code>` wherever your
+account is signed in. Keep tokens like passwords: anyone with one can add machines to your account until it runs
+out. Each added machine shows up in `ws machines`, where you can remove it.
+
+Windows programs aren't read yet. `--here` adds the lockfiles in the current folder (`package-lock.json`,
+`requirements.txt`, `Cargo.lock`, `poetry.lock`, `uv.lock`, `Gemfile.lock`, `composer.lock`). `--report scan.md`
+writes every vulnerability with its score, fix and link, and `--json` gives the same as one object.
 
 ## Set up a stream
 

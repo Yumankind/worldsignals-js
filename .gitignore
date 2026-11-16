@@ -1,3 +1,8 @@
 node_modules/
 .DS_Store
 *.tgz
+
+# worldsignals-scan: copied in when packed (scripts/copy-scan.mjs)
+/scan/bin/ws.mjs
+/scan/bin/scan.mjs
+/scan/LICENSE

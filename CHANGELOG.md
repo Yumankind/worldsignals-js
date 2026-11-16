@@ -3,6 +3,33 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## Unreleased
+
+- New package: `worldsignals-scan` (`scan/`) is the scanner on its own, for people who want only the security check. It
+  ships the same `ws.mjs` and `scan.mjs` and is released from the same tag at the same version. `npx worldsignals-scan`
+  is `ws scan`, and `worldsignals-scan machine …` the machine commands.
+- New: `scan` checks the software installed on this machine against public vulnerability databases, and says what
+  to update in plain language: what is exploited now first (CISA KEV), then the one upgrade that fixes each group,
+  then what no longer gets security fixes (endoflife.date).
+  - It reads Homebrew and apps on macOS; dpkg, rpm, apk, snap and flatpak on Linux; and global npm and pip packages
+    everywhere. `--here` adds lockfiles.
+  - Distribution packages are matched against the distribution's own OSV.dev advisories, so backported fixes count
+    as fixed. With `--nvd`, desktop apps and Homebrew formulae are matched by version against NVD.
+  - Only names and versions are sent (to OSV.dev, endoflife.date and, with `--nvd`, NVD), never to WorldSignals.
+    `--dry-run` shows every request. It lives in `bin/scan.mjs`, loaded only when `scan` runs.
+- New: `scan --alerts` enrols this machine (with an enrolment token, the access key or the agent key) and sends its
+  list of names and versions to WorldSignals, after showing every line and asking (`--yes` for scripts). Requests
+  are signed with a machine key made here and kept in `~/.config/worldsignals/machine.json`, readable only by you.
+  `--schedule daily|weekly|off` re-sends it as you (launchd, systemd user timer or cron, Task Scheduler);
+  `--upload` is what the schedule runs; `--forget` deletes it at WorldSignals and stops the schedule.
+- New: `machine` and `machines` manage many machines from the command line:
+  - `machine token` makes an enrolment token and prints the line to run elsewhere; `--revoke` stops one;
+  - `machine enrol --token` (or `WS_ENROL_TOKEN`) enrols this machine, sends its list, and schedules it daily;
+  - `machine add` and `machine approve <code>` pair a machine with a short code;
+  - `machines` lists machines and tokens; `machine remove` removes one.
+- Scheduling quotes paths the way systemd and cron read them, refuses paths with control characters, and refuses to
+  schedule as root a script that someone other than root could change.
+
 ## 0.5.2 (2026-10-29)
 
 - New: WorldSignals' own notices (a new CLI version, maintenance, deprecations) print as one line on stderr, each once:

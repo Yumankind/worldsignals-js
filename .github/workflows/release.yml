@@ -27,6 +27,11 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           version="$(node -p "require('./package.json').version")"
+          scan="$(node -p "require('./scan/package.json').version")"
+          if [ "$scan" != "$version" ]; then
+            echo "::error::scan/package.json is $scan, package.json $version: worldsignals-scan releases at the same version"
+            exit 1
+          fi
           if [ "$TAG" != "v$version" ]; then
             echo "::error::Tag $TAG does not match package.json version $version (expected v$version)"
             exit 1
@@ -83,6 +88,12 @@ jobs:
       # Staged, as npm recommends: the version waits on npmjs.com (Staged Packages) until a maintainer approves it
       # with 2FA. The trusted publisher allows only staging, so nothing in CI can make a version public on its own.
       - run: npm stage publish --provenance --access public
+      # worldsignals-scan: the same files (its prepack copies bin/ws.mjs and bin/scan.mjs in), staged the same way.
+      - name: What ships in worldsignals-scan
+        working-directory: scan
+        run: npm pack --dry-run
+      - working-directory: scan
+        run: npm stage publish --provenance --access public
 
   release:
     needs: publish
@@ -106,6 +117,7 @@ jobs:
           fi
           notes="$notes
 
-          npm: https://www.npmjs.com/package/worldsignals/v/${TAG#v}"
+          npm: https://www.npmjs.com/package/worldsignals/v/${TAG#v}
+          npm: https://www.npmjs.com/package/worldsignals-scan/v/${TAG#v}"
           printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
