@@ -1,0 +1,353 @@
+// ws scan: the pure part (versions, scores, parsers, matching, report) on fixtures, then whole scans with a fake
+// machine and fake databases: what it prints, and that --dry-run sends nothing and nothing goes to WorldSignals.
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { run } from "../bin/ws.mjs";
+import {
+  EOL_API,
+  KEV_URL,
+  OSV_API,
+  appFor,
+  appFromInfo,
+  compareDpkg,
+  compareGeneric,
+  compareRpm,
+  cvss3Score,
+  distroEcosystem,
+  eolFinding,
+  eolTargets,
+  exploitedAs,
+  groupFindings,
+  nvdFindings,
+  osvFindings,
+  osvFix,
+  osvSeverity,
+  parseApk,
+  parseBrew,
+  parseDpkg,
+  parseGemfileLock,
+  parseNpmLs,
+  parseOsRelease,
+  parsePackageLock,
+  parseRequirements,
+  parseRpm,
+  parseTomlPackages,
+  scan,
+} from "../bin/scan.mjs";
+
+test("dpkg order: tilde before release, epochs first, backported revisions", () => {
+  assert.equal(compareDpkg("1.0~rc1", "1.0"), -1);
+  assert.equal(compareDpkg("1:0.9", "2.0"), 1);
+  assert.equal(compareDpkg("3.0.13-0ubuntu3.1", "3.0.13-0ubuntu3.5"), -1);
+  assert.equal(compareDpkg("2.36.1-8+deb11u1", "2.36.1-8+deb11u2"), -1);
+  assert.equal(compareDpkg("1.2.3+dfsg-1", "1.2.3-1"), 1);
+  assert.equal(compareDpkg("1.0-1", "1.0-1"), 0);
+  assert.equal(compareDpkg("3.0.11-1~deb12u2", "3.0.13-1~deb12u1"), -1);
+});
+
+test("rpm order: epoch, version, release, ~ and ^", () => {
+  assert.equal(compareRpm("1:3.0.7-24.el9", "1:3.0.7-25.el9_3"), -1);
+  assert.equal(compareRpm("3.0.7-24.el9", "1:3.0.1-1"), -1);
+  assert.equal(compareRpm("1.0a", "1.0"), 1);
+  assert.equal(compareRpm("1.0~rc1", "1.0"), -1);
+  assert.equal(compareRpm("2.0^post", "2.0"), 1);
+  assert.equal(compareRpm("1.10", "1.9"), 1);
+});
+
+test("other versions: pre-releases before, post-releases and -rN after, numbers as numbers", () => {
+  assert.equal(compareGeneric("1.0rc1", "1.0"), -1);
+  assert.equal(compareGeneric("1.0", "1.0.0"), 0);
+  assert.equal(compareGeneric("1.0.post1", "1.0"), 1);
+  assert.equal(compareGeneric("1.0.dev1", "1.0a1"), -1);
+  assert.equal(compareGeneric("1.2.3-beta.1", "1.2.3"), -1);
+  assert.equal(compareGeneric("3.3.1-r0", "3.3.1-r10"), -1);
+  assert.equal(compareGeneric("10.0", "9.9"), 1);
+  assert.equal(compareGeneric("v2.1", "2.0.9"), 1);
+  assert.equal(compareGeneric("1.0.1", "1.0rc1"), 1);
+  assert.equal(compareGeneric("1.0+build.5", "1.0"), 0);
+});
+
+test("CVSS 3 base scores from vectors", () => {
+  assert.equal(cvss3Score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), 9.8);
+  assert.equal(cvss3Score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"), 10);
+  assert.equal(cvss3Score("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"), 8.8);
+  assert.equal(cvss3Score("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"), 7.8);
+  assert.equal(cvss3Score("CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N"), 5.9);
+  assert.equal(cvss3Score("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:L/A:N"), 6.4);
+  assert.equal(cvss3Score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"), 0);
+  assert.equal(cvss3Score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"), null);
+});
+
+test("severity: CVSS 3 first, then the database's or the distribution's rating", () => {
+  assert.deepEqual(osvSeverity({ severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }] }), { severity: "critical", score: 9.8 });
+  assert.equal(osvSeverity({ database_specific: { severity: "MODERATE" } }).severity, "medium");
+  assert.equal(osvSeverity({ severity: [{ type: "Ubuntu", score: "high" }] }).severity, "high");
+  assert.equal(osvSeverity({}, { ecosystem_specific: { urgency: "unimportant" } }).severity, "low");
+  assert.equal(osvSeverity({}, { ecosystem_specific: { urgency: "not yet assigned" } }).severity, "unrated");
+});
+
+test("distributions map to OSV's ecosystems; ones OSV lacks map to none", () => {
+  const eco = (text) => distroEcosystem(parseOsRelease(text));
+  assert.equal(eco('ID=debian\nVERSION_ID="12"\n'), "Debian:12");
+  assert.equal(eco('ID=ubuntu\nVERSION_ID="24.04"\nVERSION="24.04.1 LTS (Noble Numbat)"\n'), "Ubuntu:24.04:LTS");
+  assert.equal(eco('ID=ubuntu\nVERSION_ID="25.10"\nVERSION="25.10 (Questing Quokka)"\n'), "Ubuntu:25.10");
+  assert.equal(eco("ID=alpine\nVERSION_ID=3.20.3\n"), "Alpine:v3.20");
+  assert.equal(eco('ID="rocky"\nVERSION_ID="9.4"\n'), "Rocky Linux:9");
+  assert.equal(eco('ID=fedora\nVERSION_ID=41\n'), null);
+});
+
+test("dpkg: one item per source package, installed rows only", () => {
+  const text = ["libssl3\t3.0.13-0ubuntu3.1\topenssl\t3.0.13-0ubuntu3.1\tii ", "openssl\t3.0.13-0ubuntu3.1\topenssl\t3.0.13-0ubuntu3.1\tii ", "curl\t8.5.0-2ubuntu10.1\t\t\tii ", "oldpkg\t1.0\t\t\trc "].join("\n");
+  const items = parseDpkg(text, "Ubuntu:24.04:LTS");
+  assert.deepEqual(
+    items.map((i) => [i.name, i.version, i.binaries.join(",")]),
+    [
+      ["openssl", "3.0.13-0ubuntu3.1", "libssl3,openssl"],
+      ["curl", "8.5.0-2ubuntu10.1", "curl"],
+    ],
+  );
+  assert.equal(items[0].ecosystem, "Ubuntu:24.04:LTS");
+});
+
+test("rpm: epoch kept, (none) dropped, keys skipped", () => {
+  const items = parseRpm("openssl\t1\t3.0.7\t24.el9\topenssl-3.0.7-24.el9.src.rpm\nbash\t(none)\t5.1.8\t9.el9\tbash-5.1.8-9.el9.src.rpm\ngpg-pubkey\t(none)\tabc\tdef\t(none)", "Rocky Linux:9");
+  assert.deepEqual(items.map((i) => [i.name, i.version, i.group]), [["openssl", "1:3.0.7-24.el9", "openssl"], ["bash", "5.1.8-9.el9", "bash"]]);
+});
+
+test("apk: grouped by origin", () => {
+  const db = "C:Q1abc=\nP:libcrypto3\nV:3.3.1-r0\no:openssl\n\nC:Q1def=\nP:libssl3\nV:3.3.1-r0\no:openssl\n\nP:busybox\nV:1.36.1-r29\no:busybox\n";
+  assert.deepEqual(parseApk(db, "Alpine:v3.20").map((i) => [i.name, i.version, i.binaries.length]), [["openssl", "3.3.1-r0", 2], ["busybox", "1.36.1-r29", 1]]);
+});
+
+test("Homebrew, app bundles and npm's global tree", () => {
+  const brew = parseBrew({ formulae: [{ name: "openssl@3", installed: [{ version: "3.6.3_1" }] }], casks: [{ token: "google-chrome", installed: "157.0.8103.51", name: ["Google Chrome"] }] });
+  assert.deepEqual(brew.map((i) => [i.source, i.name, i.version]), [["brew", "openssl@3", "3.6.3"], ["brew-cask", "google-chrome", "157.0.8103.51"]]);
+  assert.equal(appFor(brew[0]).label, "OpenSSL");
+  assert.equal(appFor(brew[1]).label, "Google Chrome");
+  const zoom = appFromInfo({ CFBundleIdentifier: "us.zoom.xos", CFBundleShortVersionString: "6.4.10 (60000)", CFBundleName: "zoom.us" }, "/Applications/zoom.us.app");
+  assert.deepEqual([zoom.name, zoom.version], ["us.zoom.xos", "6.4.10"]);
+  assert.deepEqual(appFor(zoom).cpes, ["zoom:zoom", "zoom:workplace_desktop", "zoom:meetings"]);
+  const npm = parseNpmLs({ dependencies: { wrangler: { version: "4.0.0", dependencies: { undici: { version: "5.0.0" } } }, vercel: { version: "40.0.0", dependencies: { undici: { version: "5.0.0" } } } } });
+  assert.deepEqual(npm.find((i) => i.name === "undici").via, ["wrangler", "vercel"]);
+});
+
+test("lockfiles", () => {
+  const lock = parsePackageLock({ lockfileVersion: 3, packages: { "": { name: "app" }, "node_modules/lodash": { version: "4.17.20" }, "node_modules/a/node_modules/@scope/b": { version: "1.0.0" }, "node_modules/local": { version: "file:../x" } } });
+  assert.deepEqual(lock.map((i) => `${i.name}@${i.version}`), ["lodash@4.17.20", "@scope/b@1.0.0"]);
+  assert.deepEqual(parseRequirements("requests==2.31.0\nflask>=2.0\nDjango[argon2] == 4.2.1 ; python_version>'3.8'\n# pinned==1.0\n").map((i) => `${i.name}@${i.version}`), ["requests@2.31.0", "Django@4.2.1"]);
+  assert.deepEqual(parseTomlPackages('[[package]]\nname = "serde"\nversion = "1.0.100"\n\n[[package]]\nname = "rand"\nversion = "0.8.5"\n', "Cargo.lock", "crates.io").map((i) => i.name), ["serde", "rand"]);
+  assert.deepEqual(parseGemfileLock("GEM\n  specs:\n    rack (2.2.3)\n    nokogiri (1.13.0-x86_64-linux)\n      racc (~> 1.4)\n").map((i) => `${i.name}@${i.version}`), ["rack@2.2.3", "nokogiri@1.13.0"]);
+});
+
+// One Debian advisory as OSV writes it: the same source package in two releases, each with its own fix.
+const DEBIAN_VULN = {
+  id: "DEBIAN-CVE-2026-1111",
+  upstream: ["CVE-2026-1111"],
+  affected: [
+    { package: { name: "openssl", ecosystem: "Debian:12" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "3.0.17-1~deb12u3" }] }], ecosystem_specific: { urgency: "high" } },
+    { package: { name: "openssl", ecosystem: "Debian:13" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "3.5.1-1" }] }] },
+  ],
+};
+
+test("the fix is this release's, the lowest above what is installed", () => {
+  const item = { name: "openssl", version: "3.0.17-1~deb12u2", ecosystem: "Debian:12" };
+  assert.equal(osvFix(DEBIAN_VULN, item).fixed, "3.0.17-1~deb12u3");
+  const many = { id: "X", affected: [{ package: { name: "pkg", ecosystem: "PyPI" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "1.2.0" }, { introduced: "2.0" }, { fixed: "2.3.1" }, { introduced: "3.0" }, { fixed: "3.0.2" }] }] }] };
+  assert.equal(osvFix(many, { name: "pkg", version: "2.1", ecosystem: "PyPI" }).fixed, "2.3.1");
+  const none = { id: "Y", affected: [{ package: { name: "pkg", ecosystem: "PyPI" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }] }] }] };
+  assert.equal(osvFix(none, { name: "pkg", version: "2.1", ecosystem: "PyPI" }).fixed, null);
+});
+
+test("KEV marks a finding exploited through the advisory's CVE", () => {
+  const kev = new Map([["CVE-2026-1111", { cveID: "CVE-2026-1111", dateAdded: "2026-11-12", knownRansomwareCampaignUse: "Known" }]]);
+  const [f] = osvFindings({ name: "openssl", version: "3.0.17-1~deb12u2", ecosystem: "Debian:12" }, [DEBIAN_VULN], kev);
+  assert.deepEqual(f.exploited, { since: "2026-11-12", ransomware: true });
+  assert.equal(f.severity, "high");
+  assert.equal(f.link, "https://nvd.nist.gov/vuln/detail/CVE-2026-1111");
+});
+
+test("NVD: configurations for another OS are left out; the fix is versionEndExcluding", () => {
+  const app = appFor({ source: "app", name: "com.google.Chrome" });
+  const cve = (id, nodes) => ({ cve: { id, metrics: { cvssMetricV31: [{ type: "Primary", cvssData: { baseScore: 8.8 } }] }, descriptions: [{ lang: "en", value: id }], configurations: [{ nodes }] } });
+  const chrome = (end) => ({ cpeMatch: [{ vulnerable: true, criteria: "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*", versionEndExcluding: end }] });
+  const on = (os) => ({ cpeMatch: [{ vulnerable: false, criteria: `cpe:2.3:o:${os}:-:*:*:*:*:*:*:*` }] });
+  const answer = [cve("CVE-A", [chrome("158.0.1")]), cve("CVE-B", [chrome("158.0.2"), on("google:android")]), cve("CVE-C", [chrome("158.0.3"), on("apple:macos")])];
+  const found = nvdFindings(app, { version: "157.0.8103.51" }, answer, new Map(), "macos");
+  assert.deepEqual(found.map((f) => [f.id, f.fixed, f.severity, f.confidence]), [["CVE-A", "158.0.1", "high", "likely"], ["CVE-C", "158.0.3", "high", "likely"]]);
+});
+
+test("NVD: ranges written as dates (git snapshots) don't match a release number", () => {
+  const app = appFor({ source: "brew", name: "ffmpeg" });
+  const answer = [{ cve: { id: "CVE-D", metrics: {}, configurations: [{ nodes: [{ cpeMatch: [{ vulnerable: true, criteria: "cpe:2.3:a:ffmpeg:ffmpeg:*:*:*:*:*:*:*:*", versionEndExcluding: "2025-01-13" }] }] }] } }];
+  assert.deepEqual(nvdFindings(app, { version: "8.1.2" }, answer, new Map(), "macos"), []);
+});
+
+test("exploited through another product: said so, and ranked after exploits of this one", () => {
+  const kev = { cveID: "CVE-2026-97229", vendorProject: "GitLab", product: "Community Edition and Enterprise Edition", dateAdded: "2026-10-29" };
+  assert.deepEqual(exploitedAs(kev, ["Ruby", "ruby-lang", "ruby"]), { since: "2026-10-29", ransomware: false, elsewhere: "GitLab Community Edition and Enterprise Edition" });
+  assert.equal(exploitedAs({ ...kev, vendorProject: "Google", product: "Chromium V8" }, ["Google Chrome", "google", "chrome"]).elsewhere, undefined);
+  const f = (id, exploited) => ({ id, cves: [id], severity: "high", score: null, fixed: "2", exploited, summary: "", link: "", confidence: "likely" });
+  const app = (name) => ({ source: "brew", name, version: "1" });
+  const { groups } = groupFindings([
+    { item: app("ruby"), app: appFor(app("ruby")), findings: [f("CVE-R", { since: "2026-10-29", elsewhere: "GitLab" })] },
+    { item: app("curl"), app: appFor(app("curl")), findings: [f("CVE-C", { since: "2026-11-01" })] },
+  ]);
+  assert.deepEqual(groups.map((g) => g.title), ["curl", "Ruby"]);
+});
+
+test("end of life: the oldest newer release still supported", () => {
+  const now = new Date("2026-11-16T00:00:00Z");
+  const answer = { result: { releases: [{ name: "4.0", label: "4.0", isMaintained: true }, { name: "3.6", isEol: true, eolFrom: "2026-11-01" }, { name: "3.5", label: "3.5 (LTS)", isMaintained: true }, { name: "1.0.2", label: "1.0.2", isMaintained: true }] } };
+  const [t] = eolTargets({ items: [{ source: "brew", name: "openssl@3", version: "3.6.3" }] });
+  assert.deepEqual([t.product, t.cycle], ["openssl", "3.6"]);
+  const f = eolFinding(t, answer, now);
+  assert.equal(f.move_to, "OpenSSL 4.0");
+  assert.equal(f.eol_on, "2026-11-01");
+  assert.equal(eolFinding({ ...t, cycle: "3.5" }, answer, now), null);
+});
+
+test("groups: exploited first, one command per kind, no-fix findings apart", () => {
+  const f = (id, severity, fixed, exploited = null) => ({ id, cves: [id], severity, score: null, fixed, exploited, summary: "", link: "", confidence: "confirmed" });
+  const { groups, noFix } = groupFindings([
+    { item: { source: "pip", name: "requests", version: "2.0", ecosystem: "PyPI" }, findings: [f("CVE-1", "medium", "2.32.4")] },
+    { item: { source: "pip", name: "jinja2", version: "3.1.2", ecosystem: "PyPI" }, findings: [f("CVE-2", "high", "3.1.6"), f("CVE-3", "low", null)] },
+    { item: { source: "app", name: "com.google.Chrome", version: "157.0" }, app: appFor({ source: "app", name: "com.google.Chrome" }), findings: [f("CVE-4", "medium", "158.0", { since: "2026-11-12" })] },
+  ]);
+  assert.deepEqual(groups.map((g) => g.title), ["Google Chrome", "Python packages (pip)"]);
+  assert.equal(groups[1].how, "python3 -m pip install -U requests jinja2");
+  assert.deepEqual(noFix.map((x) => [x.id, x.package]), [["CVE-3", "jinja2"]]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Whole scans on a fake Ubuntu machine.
+
+const OS_RELEASE = 'NAME="Ubuntu"\nVERSION_ID="24.04"\nVERSION="24.04.1 LTS (Noble Numbat)"\nID=ubuntu\nPRETTY_NAME="Ubuntu 24.04.1 LTS"\n';
+const DPKG = "libssl3t64\t3.0.13-0ubuntu3.1\topenssl\t3.0.13-0ubuntu3.1\tii \ncurl\t8.5.0-2ubuntu10.6\t\t\tii \n";
+const PIP = JSON.stringify([{ name: "requests", version: "2.31.0" }]);
+const UBUNTU_VULN = {
+  id: "UBUNTU-CVE-2026-2222",
+  upstream: ["CVE-2026-2222"],
+  summary: "openssl: crafted certificate crashes the server",
+  severity: [{ type: "Ubuntu", score: "high" }],
+  affected: [{ package: { name: "openssl", ecosystem: "Ubuntu:24.04:LTS" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "3.0.13-0ubuntu3.5" }] }] }],
+};
+const PYPI_VULN = {
+  id: "GHSA-aaaa-bbbb-cccc",
+  aliases: ["CVE-2026-3333"],
+  summary: "Requests leaks credentials on redirect",
+  severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N" }],
+  affected: [{ package: { name: "requests", ecosystem: "PyPI" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "2.32.4" }] }] }],
+};
+
+function fakeMachine() {
+  const ran = [];
+  return {
+    ran,
+    sys: {
+      which: (name) => (["dpkg-query", "python3"].includes(name) ? `/usr/bin/${name}` : null),
+      read: (path) => (path === "/etc/os-release" ? OS_RELEASE : null),
+      ls: () => [],
+      run: async (cmd, args) => {
+        ran.push([cmd, ...args].join(" "));
+        if (cmd === "dpkg-query") return DPKG;
+        if (cmd.endsWith("python3") && args[0] === "--version") return "Python 3.12.3\n";
+        if (cmd.endsWith("python3") && args.includes("pip")) return PIP;
+        return null;
+      },
+    },
+  };
+}
+
+function fakeDatabases() {
+  const calls = [];
+  const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body, headers: new Headers() });
+  const fetch = async (url, init = {}) => {
+    calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+    if (url === KEV_URL) return json({ vulnerabilities: [{ cveID: "CVE-2026-2222", dateAdded: "2026-11-12", knownRansomwareCampaignUse: "Unknown" }] });
+    if (url === `${OSV_API}/querybatch`) {
+      const { queries } = JSON.parse(init.body);
+      return json({ results: queries.map((q) => (["openssl", "requests"].includes(q.package.name) ? { vulns: [{ id: "x" }] } : {})) });
+    }
+    if (url === `${OSV_API}/query`) {
+      const q = JSON.parse(init.body);
+      return json({ vulns: q.package.name === "openssl" ? [UBUNTU_VULN] : q.package.name === "requests" ? [PYPI_VULN] : [] });
+    }
+    if (url.startsWith(`${EOL_API}/`)) return json({ result: { releases: [{ name: "24.04", isMaintained: true }, { name: "3.12", isMaintained: true }] } });
+    return json({}, 404);
+  };
+  return { fetch, calls };
+}
+
+async function scanWith(argv) {
+  const machine = fakeMachine();
+  const dbs = fakeDatabases();
+  const out = [];
+  const err = [];
+  const env = { HOME: mkdtempSync(join(tmpdir(), "ws-scan-")), XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "ws-cache-")), PATH: "/usr/bin" };
+  const code = await scan(argv, { fetch: dbs.fetch, env, out: (s) => out.push(s), err: (s) => err.push(s), platform: "linux", sys: machine.sys, now: () => new Date("2026-11-16T10:00:00Z"), version: "test" });
+  return { code, out: out.join("\n"), err: err.join("\n"), calls: dbs.calls, ran: machine.ran };
+}
+
+test("a scan: exploited first, the distribution's own update, the pip command, what was sent", async () => {
+  const r = await scanWith([]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /WorldSignals machine check · Ubuntu 24\.04\.1 LTS · 16 Nov 2026/);
+  assert.match(r.out, /Sent package names and versions to OSV\.dev \(Google\); product names to endoflife\.date\. Nothing went to WorldSignals\./);
+  assert.match(r.out, /2 updates fix all 2 known vulnerabilities that have a fix\. One of them is urgent/);
+  const first = r.out.indexOf("1. Ubuntu packages: 1 package to update");
+  assert.ok(first > 0 && first < r.out.indexOf("2. requests 2.31.0 → 2.32.4 (pip)"), r.out);
+  assert.match(r.out, /\[EXPLOITED NOW\]/);
+  assert.match(r.out, /CVE-2026-2222 is on CISA's list of exploited vulnerabilities since 12 Nov 2026/);
+  assert.match(r.out, /openssl 3\.0\.13-0ubuntu3\.1 → 3\.0\.13-0ubuntu3\.5/);
+  assert.match(r.out, /How: sudo apt update && sudo apt upgrade/);
+  assert.match(r.out, /How: python3 -m pip install -U requests/);
+  // Distro packages went to OSV under Ubuntu's ecosystem, by source package; nothing to WorldSignals.
+  const batch = r.calls.find((c) => c.url.endsWith("/querybatch")).body.queries;
+  assert.deepEqual(batch.find((q) => q.package.name === "openssl"), { package: { ecosystem: "Ubuntu:24.04:LTS", name: "openssl" }, version: "3.0.13-0ubuntu3.1" });
+  assert.ok(r.calls.every((c) => !/worldsignals/.test(new URL(c.url).host)));
+  // Only the packages OSV matched are fetched in full.
+  assert.deepEqual(r.calls.filter((c) => c.url.endsWith("/v1/query")).map((c) => c.body.package.name).sort(), ["openssl", "requests"]);
+});
+
+test("--dry-run prints the requests and makes none", async () => {
+  const r = await scanWith(["--dry-run"]);
+  assert.equal(r.code, 0);
+  assert.equal(r.calls.length, 0);
+  assert.match(r.out, /POST https:\/\/api\.osv\.dev\/v1\/querybatch/);
+  assert.match(r.out, /\{"package":\{"ecosystem":"Ubuntu:24\.04:LTS","name":"openssl"\},"version":"3\.0\.13-0ubuntu3\.1"\}/);
+  assert.match(r.out, /GET https:\/\/endoflife\.date\/api\/v1\/products\/ubuntu/);
+  assert.match(r.out, /Nothing is sent to WorldSignals\./);
+});
+
+test("--inventory makes no request; --json is one object", async () => {
+  const inv = await scanWith(["--inventory"]);
+  assert.equal(inv.calls.length, 0);
+  assert.match(inv.out, /dpkg\tUbuntu:24\.04:LTS\topenssl\t3\.0\.13-0ubuntu3\.1/);
+  const j = await scanWith(["--json"]);
+  const report = JSON.parse(j.out);
+  assert.equal(report.groups.length, 2);
+  assert.equal(report.groups[0].exploited[0].cves[0], "CVE-2026-2222");
+  assert.equal(report.sent.worldsignals, false);
+});
+
+test("OSV unreachable: said plainly, not as a clean bill of health", async () => {
+  const machine = fakeMachine();
+  const out = [];
+  const env = { HOME: tmpdir(), XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "ws-cache-")), PATH: "/usr/bin" };
+  const fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  await scan([], { fetch, env, out: (s) => out.push(s), err: () => {}, platform: "linux", sys: machine.sys });
+  assert.match(out.join("\n"), /OSV\.dev: couldn't be reached \(api\.osv\.dev answered 503\): packages weren't checked/);
+});
+
+test("ws scan is reachable from ws, with its own help", async () => {
+  const out = [];
+  const code = await run(["scan", "--help"], { out: (s) => out.push(s), err: () => {}, env: {} });
+  assert.equal(code, 0);
+  assert.match(out.join("\n"), /ws scan \[--report <file\.md>\]/);
+  const bad = [];
+  assert.equal(await run(["scan", "--nope"], { out: () => {}, err: (s) => bad.push(s), env: {} }), 2);
+  assert.match(bad.join("\n"), /Unknown option '--nope'/);
+});

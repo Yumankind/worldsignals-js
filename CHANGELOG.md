@@ -3,6 +3,18 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
+## Unreleased
+
+- New: `scan` checks the software installed on this machine against public vulnerability databases, and says what
+  to update in plain language: what is exploited now first (CISA KEV), then the one upgrade that fixes each group,
+  then what no longer gets security fixes (endoflife.date).
+  - It reads Homebrew and apps on macOS; dpkg, rpm, apk, snap and flatpak on Linux; and global npm and pip packages
+    everywhere. `--here` adds lockfiles.
+  - Distribution packages are matched against the distribution's own OSV.dev advisories, so backported fixes count
+    as fixed. With `--nvd`, desktop apps and Homebrew formulae are matched by version against NVD.
+  - Only names and versions are sent (to OSV.dev, endoflife.date and, with `--nvd`, NVD), never to WorldSignals.
+    `--dry-run` shows every request. It lives in `bin/scan.mjs`, loaded only when `scan` runs.
+
 ## 0.5.2 (2026-10-29)
 
 - New: WorldSignals' own notices (a new CLI version, maintenance, deprecations) print as one line on stderr, each once:

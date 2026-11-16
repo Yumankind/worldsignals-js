@@ -190,8 +190,42 @@ command.
 | `request` | Ask for data that isn't collected yet (`--countries`, `--use`, `--source`, `--json`) |
 | `feedback` | Tell us about a bug, a problem or an idea (`--kind` bug, problem or idea; `--json`) |
 | `api` | Any call to the WorldSignals API under `/api/`, signed as the other commands sign (`--raw`) |
+| `scan` | Check the software installed on this machine against public vulnerability databases, and say what to update (`--report`, `--json`, `--dry-run`, `--here`, `--nvd`, `--inventory`). No account needed |
 
 `npx worldsignals help` has every option. `WS_API` points the tool at another server, for testing.
+
+## Check this machine
+
+```sh
+npx worldsignals scan
+```
+
+`scan` lists what is installed and checks it against public vulnerability databases. It reads Homebrew and the
+apps in `/Applications` on macOS; dpkg, rpm, apk, snap and flatpak on Linux; and global npm and pip packages
+everywhere. Then it says, in plain language:
+
+- what is being exploited right now, first, from CISA's list of exploited vulnerabilities;
+- the one upgrade that fixes each group, with the command or menu to use;
+- what no longer gets security fixes (endoflife.date).
+
+Every finding is free and shown in full, and no account is needed. It needs no admin rights.
+
+**What leaves the machine.** Package names and versions go to [OSV.dev](https://osv.dev) (run by Google), and
+product names such as `nodejs` go to endoflife.date. CISA's catalogue is downloaded whole, so nothing is sent
+there. Nothing goes to WorldSignals. `--dry-run` prints every request and its exact body, and sends none.
+`--inventory` lists what is installed and makes no request at all.
+
+**How it matches.**
+- **Linux distribution packages** are checked against the distribution's own advisories (Debian, Ubuntu,
+  Alpine, Rocky, AlmaLinux), which know when a fix was backported without changing the version number.
+- **Language packages** (npm, PyPI) are checked against OSV.dev.
+- **Desktop apps and Homebrew formulae** (Chrome, Firefox, Zoom, VS Code, OpenSSL and about 40 others) are checked
+  only with `--nvd`, by version number against NVD. That sends each one's name and version to NIST, and takes
+  about 7 seconds per app without an `NVD_API_KEY`.
+
+Windows programs aren't read yet. `--here` adds the lockfiles in the current folder (`package-lock.json`,
+`requirements.txt`, `Cargo.lock`, `poetry.lock`, `uv.lock`, `Gemfile.lock`, `composer.lock`). `--report scan.md`
+writes every vulnerability with its score, fix and link, and `--json` gives the same as one object.
 
 ## Set up a stream
 

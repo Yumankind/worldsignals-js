@@ -178,6 +178,14 @@ Events (signed with the agent key; or send a named or personal access key with -
                          give each watcher its own
       --once             handle what is waiting, then exit: for cron and scheduled jobs
 
+This machine (no account or key needed):
+  ${p} scan [--report <file.md>] [--json] [--dry-run] [--here] [--nvd] [--inventory] [--unchecked]
+      Check the software installed here against public vulnerability databases (OSV.dev, CISA's exploited list,
+      endoflife.date) and say in plain language what to update: what is exploited right now first, then the
+      one upgrade that fixes each group, then what no longer gets security fixes. Free and complete. Sends
+      package names and versions to OSV.dev and product names to endoflife.date, nothing to WorldSignals;
+      --dry-run shows every request and sends none. ${p} scan --help lists the options.
+
 Plan a stream (types and fields need no key):
   ${p} types [--family <ids>] [--json]
       The event types, by family, and where each is collected: country codes, worldwide (XX) for the events
@@ -692,6 +700,7 @@ export async function run(
   if (command === "fields") return fieldsCommand(rest, ctx);
   if (command === "estimate") return estimateCommand(rest, ctx);
   if (command === "api") return apiCommand(rest, ctx);
+  if (command === "scan") return scanCommand(rest, ctx);
 
   if (command === "events") return eventsCommand(rest, ctx);
 
@@ -699,6 +708,25 @@ export async function run(
 
   err(`Unknown command "${command}". Run ${p} help.`);
   return 2;
+}
+
+/**
+ * ws scan lives in scan.mjs, next to this file, loaded only when it runs (the npm package has both). Someone who
+ * downloaded ws.mjs alone is told where to get the other one.
+ */
+async function scanCommand(rest, ctx) {
+  let mod;
+  try {
+    mod = await import("./scan.mjs");
+  } catch (e) {
+    if (e?.code !== "ERR_MODULE_NOT_FOUND") throw e;
+    ctx.err(
+      `${ctx.p} scan needs scan.mjs in the same folder as ws.mjs. Download it from ${DEFAULT_API}/cli/scan.mjs, or run\n` +
+        `  npx worldsignals scan`,
+    );
+    return 2;
+  }
+  return mod.scan(rest, { ...ctx, version: VERSION });
 }
 
 /** Pages ws events reads back at most, by default, and at most with --pages. */
