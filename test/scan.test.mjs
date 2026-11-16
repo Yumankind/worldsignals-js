@@ -514,3 +514,28 @@ test("schedule files for launchd, systemd and Task Scheduler", () => {
   assert.ok(t.hour >= 9 && t.hour <= 16 && t.minute >= 0 && t.minute < 60);
   assert.deepEqual(scheduleTime("m_1"), t);
 });
+
+test("--schedule on Linux uses cron unless systemd keeps the user's timers running (linger)", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_good", "--yes"]);
+  const env = { ...r.env, USER: "ana" };
+  for (const [linger, expected] of [["Linger=no\n", "cron"], ["Linger=yes\n", "systemd"]]) {
+    let table = "";
+    const wrote = [];
+    const sysExtra = {
+      run: async (cmd, args) => (cmd === "loginctl" ? linger : cmd === "systemctl" ? "PATH=/usr/bin\n" : cmd === "crontab" ? table : fakeMachine().sys.run(cmd, args)),
+      runWithInput: async (cmd, args, input) => ((table = input), true),
+      write: (path) => wrote.push(path),
+    };
+    const on = await alertsWith(["--schedule", "daily"], { ws: r.ws, env, sysExtra });
+    assert.equal(on.code, 0, on.err);
+    if (expected === "cron") {
+      assert.match(table, /# worldsignals-scan/);
+      assert.equal(wrote.length, 0);
+      assert.match(on.out, /your crontab/);
+    } else {
+      assert.equal(table, "");
+      assert.ok(wrote.some((p) => p.endsWith("worldsignals-scan.timer")));
+      assert.match(on.out, /systemd user timer/);
+    }
+  }
+});

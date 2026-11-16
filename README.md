@@ -231,7 +231,8 @@ name are sent. To get it:
 1. Make an enrolment token in the console under Machines → Add a machine, then run
    `ws scan --alerts --token <token>`.
 2. `ws scan --schedule daily` keeps the list current, running as you with no admin rights: launchd on macOS, a
-   systemd user timer or cron on Linux, Task Scheduler on Windows. Scheduling needs `npm install -g worldsignals`
+   systemd user timer (when lingering is on) or else cron on Linux, Task Scheduler on Windows. Scheduling needs
+   `npm install -g worldsignals`
    rather than npx.
 3. `ws scan --forget` deletes the machine and its list at WorldSignals, and stops the schedule. `--yes` sends
    without asking, for scripts and device management.

@@ -1618,7 +1618,11 @@ async function scheduleScan(ctx, every) {
     how = `launchd (${plist})`;
   } else if (platform === "linux") {
     const dir = join(env.XDG_CONFIG_HOME || join(home, ".config"), "systemd", "user");
-    const systemd = (await run("systemctl", ["--user", "show-environment"])) !== null;
+    // A systemd user timer runs only while the user is logged in, unless lingering is on (as on a server reached
+    // over SSH it usually isn't): then cron, which runs whether anyone is logged in or not.
+    const user = env.USER || env.LOGNAME || "";
+    const linger = user ? /Linger=yes/.test((await run("loginctl", ["show-user", user, "-p", "Linger"])) ?? "") : false;
+    const systemd = linger && (await run("systemctl", ["--user", "show-environment"])) !== null;
     if (systemd) {
       await run("systemctl", ["--user", "disable", "--now", "worldsignals-scan.timer"]);
       if (every === "off") {
