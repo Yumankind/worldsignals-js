@@ -36,7 +36,18 @@ import {
   parseRpm,
   parseTomlPackages,
   scan,
+  cronTable,
+  launchdPlist,
+  machinePath,
+  readMachine,
+  schtasksArgs,
+  scheduleTime,
+  systemdUnits,
+  uploadPayload,
 } from "../bin/scan.mjs";
+import { readFileSync, statSync } from "node:fs";
+const statMode = (p) => statSync(p).mode;
+import { generateKeyPairSync, createPublicKey, verify, createHash } from "node:crypto";
 
 test("dpkg order: tilde before release, epochs first, backported revisions", () => {
   assert.equal(compareDpkg("1.0~rc1", "1.0"), -1);
@@ -350,4 +361,156 @@ test("ws scan is reachable from ws, with its own help", async () => {
   const bad = [];
   assert.equal(await run(["scan", "--nope"], { out: () => {}, err: (s) => bad.push(s), env: {} }), 2);
   assert.match(bad.join("\n"), /Unknown option '--nope'/);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Alerts: enrol, show what is sent, send, schedule, forget.
+
+const API = "https://ws.test";
+
+/** A fake WorldSignals that enrols with a token and checks each machine signature. */
+function fakeWorldSignals() {
+  const calls = [];
+  const keys = new Map();
+  const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
+  const fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    const body = init.body ?? "";
+    calls.push({ method: init.method, path: u.pathname, headers: init.headers, body: body ? JSON.parse(body) : null });
+    if (u.hostname !== "ws.test") return fakeDatabases().fetch(url, init);
+    if (u.pathname === "/api/machines/enrol") {
+      const b = JSON.parse(body);
+      if (b.token !== "wsm_good") return json({ error: "That enrolment token doesn't work." }, 401);
+      keys.set("m_1", b.public_key);
+      return json({ machine_id: "m_1", label: b.label ?? null, account: { name: "Ribeiro & Costa" } }, 201);
+    }
+    const id = init.headers["x-ws-machine"];
+    const key = keys.get(id);
+    if (!key) return json({ error: "unknown machine" }, 401);
+    const hash = body ? createHash("sha256").update(body).digest("base64url") : "";
+    const text = `${init.method} ${u.pathname}${u.search} ${init.headers["x-ws-timestamp"]} ${hash}`;
+    const pub = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: key }, format: "jwk" });
+    if (!verify(null, Buffer.from(text), pub, Buffer.from(init.headers["x-ws-signature"], "base64url"))) return json({ error: "bad signature" }, 401);
+    if (u.pathname === "/api/machine/report") return json({ machine_id: id, label: "Reception PC", account: { name: "Ribeiro & Costa" }, changes: { added: 3, removed: 0, upgraded: 0 }, console_url: `${API}/console/machines/${id}` });
+    if (u.pathname === "/api/machine" && init.method === "DELETE") {
+      keys.delete(id);
+      return json({ deleted: true });
+    }
+    return json({}, 404);
+  };
+  return { fetch, calls };
+}
+
+async function alertsWith(argv, { ws = fakeWorldSignals(), env = { HOME: mkdtempSync(join(tmpdir(), "ws-home-")), XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "ws-cache-")), WS_API: API, PATH: "/usr/bin" }, stdin = null, sysExtra = {} } = {}) {
+  const machine = fakeMachine();
+  const out = [];
+  const err = [];
+  const code = await scan(argv, { fetch: ws.fetch, env, out: (s) => out.push(s), err: (s) => err.push(s), platform: "linux", sys: { ...machine.sys, ...sysExtra }, version: "test", stdin, scriptPath: "/usr/local/lib/node_modules/worldsignals/bin/ws.mjs", nodePath: "/usr/local/bin/node" });
+  return { code, out: out.join("\n"), err: err.join("\n"), ws, env };
+}
+
+test("the upload carries names and versions only, never paths", () => {
+  const payload = uploadPayload(
+    { os: { family: "macos", version: "27.1", label: "macOS 27.1" }, items: [{ source: "app", name: "com.google.Chrome", version: "157.0", label: "Google Chrome", path: "/Users/ana/Applications/Google Chrome.app" }, { source: "pip", ecosystem: "PyPI", name: "requests", version: "2.31.0", python: "/Users/ana/.venv/bin/python3", user: true }] },
+    "0.6.0",
+  );
+  assert.deepEqual(payload.items[0], { source: "app", name: "com.google.Chrome", version: "157.0", label: "Google Chrome", cpes: ["google:chrome"], how: "Chrome menu ⋮ → Help → About Google Chrome, then Relaunch" });
+  assert.deepEqual(payload.items[1], { source: "pip", ecosystem: "PyPI", name: "requests", version: "2.31.0" });
+  assert.doesNotMatch(JSON.stringify(payload), /ana/);
+});
+
+test("--alerts with no terminal and no --yes shows the list and sends nothing", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_good"]);
+  assert.equal(r.code, 2);
+  assert.match(r.out, /This is everything ws scan --alerts sends to WorldSignals \(POST https:\/\/ws\.test\/api\/machine\/report\)/);
+  assert.match(r.out, /\{"source":"dpkg","ecosystem":"Ubuntu:24\.04:LTS","name":"openssl","version":"3\.0\.13-0ubuntu3\.1"\}/);
+  assert.match(r.err, /Not sent: there is no terminal to ask/);
+  assert.equal(r.ws.calls.length, 0);
+  assert.equal(readMachine(r.env, API), null);
+});
+
+test("--alerts --yes enrols with a token, keeps the key private, and sends a signed list", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_good", "--label", "Reception PC", "--yes"]);
+  assert.equal(r.code, 0, r.err);
+  const [enrol, report] = r.ws.calls;
+  assert.equal(enrol.path, "/api/machines/enrol");
+  assert.equal(enrol.body.label, "Reception PC");
+  assert.equal(enrol.body.consent, true);
+  assert.equal(report.path, "/api/machine/report");
+  assert.equal(report.headers["x-ws-machine"], "m_1");
+  assert.ok(report.body.items.some((i) => i.name === "openssl"));
+  assert.match(r.out, /Sent\. Reception PC is enrolled in Ribeiro & Costa/);
+  assert.match(r.out, /ws scan --schedule daily/);
+  const saved = readMachine(r.env, API);
+  assert.equal(saved.machine_id, "m_1");
+  assert.match(saved.private_key, /BEGIN PRIVATE KEY/);
+  assert.equal(readFileSync(machinePath(r.env)).length > 0 && (process.platform === "win32" || (statMode(machinePath(r.env)) & 0o077) === 0), true);
+  // A second run uploads with the same key, without enrolling again.
+  const again = await alertsWith(["--upload"], { ws: r.ws, env: r.env });
+  assert.equal(again.code, 0, again.err);
+  assert.match(again.out, /sent \d+ items \(3 added, 0 removed, 0 upgraded\)/);
+  assert.equal(r.ws.calls.filter((c) => c.path === "/api/machines/enrol").length, 1);
+  // --forget deletes it there and here.
+  const gone = await alertsWith(["--forget"], { ws: r.ws, env: r.env, sysExtra: { runWithInput: async () => true } });
+  assert.equal(gone.code, 0, gone.err);
+  assert.match(gone.out, /WorldSignals no longer holds this machine/);
+  assert.equal(readMachine(r.env, API), null);
+  assert.equal(r.ws.calls.at(-1).method, "DELETE");
+});
+
+test("a bad token is refused and nothing is kept", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_bad", "--yes"]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /Not enrolled: That enrolment token doesn't work\./);
+  assert.equal(readMachine(r.env, API), null);
+});
+
+test("--upload and --schedule need an enrolled machine", async () => {
+  const up = await alertsWith(["--upload"]);
+  assert.equal(up.code, 2);
+  assert.match(up.err, /isn't enrolled for alerts/);
+  const sch = await alertsWith(["--schedule", "daily"]);
+  assert.equal(sch.code, 2);
+  assert.match(sch.err, /isn't enrolled yet/);
+});
+
+test("--schedule writes the crontab line once, as the user, and off removes it", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_good", "--yes"]);
+  let table = "MAILTO=me\n0 1 * * * backup\n";
+  const sysExtra = { run: async (cmd, args) => (cmd === "crontab" ? table : cmd === "systemctl" ? null : fakeMachine().sys.run(cmd, args)), runWithInput: async (cmd, args, input) => ((table = input), true) };
+  const on = await alertsWith(["--schedule", "daily"], { ws: r.ws, env: r.env, sysExtra });
+  assert.equal(on.code, 0, on.err);
+  assert.match(table, /^MAILTO=me\n0 1 \* \* \* backup\n\d+ \d+ \* \* \* '\/usr\/local\/bin\/node' '\/usr\/local\/lib\/node_modules\/worldsignals\/bin\/ws\.mjs' scan --upload >\/dev\/null 2>&1 # worldsignals-scan\n$/);
+  await alertsWith(["--schedule", "weekly"], { ws: r.ws, env: r.env, sysExtra });
+  assert.equal(table.match(/worldsignals-scan/g).length, 1);
+  assert.match(table, / \* \* 1 '/);
+  assert.equal(readMachine(r.env, API).schedule, "weekly");
+  await alertsWith(["--schedule", "off"], { ws: r.ws, env: r.env, sysExtra });
+  assert.equal(table, "MAILTO=me\n0 1 * * * backup\n");
+});
+
+test("scheduling refuses npx's temporary folder", async () => {
+  const r = await alertsWith(["--alerts", "--token", "wsm_good", "--yes"]);
+  const out = [];
+  const err = [];
+  const code = await scan(["--schedule", "daily"], { fetch: r.ws.fetch, env: r.env, out: (s) => out.push(s), err: (s) => err.push(s), platform: "linux", sys: fakeMachine().sys, scriptPath: "/home/ana/.npm/_npx/abc/node_modules/worldsignals/bin/ws.mjs" });
+  assert.equal(code, 2);
+  assert.match(err.join("\n"), /npm install -g worldsignals/);
+});
+
+test("schedule files for launchd, systemd and Task Scheduler", () => {
+  const spec = { node: "/opt/homebrew/bin/node", script: "/opt/homebrew/lib/node_modules/worldsignals/bin/ws.mjs", every: "weekly", hour: 10, minute: 7 };
+  const plist = launchdPlist({ ...spec, log: "/Users/x/Library/Logs/worldsignals-scan.log" });
+  assert.match(plist, /<key>Label<\/key><string>dev\.worldsignals\.scan<\/string>/);
+  assert.match(plist, /<string>scan<\/string><string>--upload<\/string>/);
+  assert.match(plist, /<key>Hour<\/key><integer>10<\/integer><key>Minute<\/key><integer>7<\/integer><key>Weekday<\/key><integer>1<\/integer>/);
+  const units = systemdUnits(spec);
+  assert.match(units.service, /^ExecStart='\/opt\/homebrew\/bin\/node' '\/opt\/homebrew\/lib\/node_modules\/worldsignals\/bin\/ws\.mjs' scan --upload$/m);
+  assert.match(units.timer, /^OnCalendar=Mon \*-\*-\* 10:07:00$/m);
+  assert.match(units.timer, /^Persistent=true$/m);
+  assert.deepEqual(schtasksArgs({ ...spec, every: "daily", node: "C:\\node.exe", script: "C:\\ws.mjs" }), ["/Create", "/F", "/SC", "DAILY", "/ST", "10:07", "/TN", "WorldSignals scan", "/TR", '"C:\\node.exe" "C:\\ws.mjs" scan --upload']);
+  assert.equal(cronTable("", { ...spec, every: "off" }), "");
+  const t = scheduleTime("m_1");
+  assert.ok(t.hour >= 9 && t.hour <= 16 && t.minute >= 0 && t.minute < 60);
+  assert.deepEqual(scheduleTime("m_1"), t);
 });

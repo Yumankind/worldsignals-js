@@ -223,6 +223,19 @@ there. Nothing goes to WorldSignals. `--dry-run` prints every request and its ex
   only with `--nvd`, by version number against NVD. That sends each one's name and version to NIST, and takes
   about 7 seconds per app without an `NVD_API_KEY`.
 
+**Alerts for this machine (opt-in).** `ws scan --alerts` enrols the machine in your WorldSignals account and sends
+the list of names and versions, after showing every line of it and asking. WorldSignals then matches the list
+against each new vulnerability and tells you when one hits something installed. No file paths, user names or host
+name are sent. To get it:
+
+1. Make an enrolment token in the console under Machines → Add a machine, then run
+   `ws scan --alerts --token <token>`.
+2. `ws scan --schedule daily` keeps the list current, running as you with no admin rights: launchd on macOS, a
+   systemd user timer or cron on Linux, Task Scheduler on Windows. Scheduling needs `npm install -g worldsignals`
+   rather than npx.
+3. `ws scan --forget` deletes the machine and its list at WorldSignals, and stops the schedule. `--yes` sends
+   without asking, for scripts and device management.
+
 Windows programs aren't read yet. `--here` adds the lockfiles in the current folder (`package-lock.json`,
 `requirements.txt`, `Cargo.lock`, `poetry.lock`, `uv.lock`, `Gemfile.lock`, `composer.lock`). `--report scan.md`
 writes every vulnerability with its score, fix and link, and `--json` gives the same as one object.

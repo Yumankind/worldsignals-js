@@ -726,7 +726,14 @@ async function scanCommand(rest, ctx) {
     );
     return 2;
   }
-  return mod.scan(rest, { ...ctx, version: VERSION });
+  // Enrolling a machine for alerts (--alerts) without a token signs with the access key or the agent key, as other
+  // commands do; the schedule runs this same file, so it needs its real path.
+  const cred = credentials({}, ctx.env, ctx.api);
+  let scriptPath = process.argv[1];
+  try {
+    scriptPath = realpathSync(process.argv[1]);
+  } catch {}
+  return mod.scan(rest, { ...ctx, version: VERSION, credentialHeaders: cred ? (method, url, body) => cred.headers(method, url, body) : null, scriptPath });
 }
 
 /** Pages ws events reads back at most, by default, and at most with --pages. */

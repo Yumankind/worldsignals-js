@@ -14,6 +14,11 @@ Versions of the `worldsignals` package on npm. Not every tagged or committed ver
     as fixed. With `--nvd`, desktop apps and Homebrew formulae are matched by version against NVD.
   - Only names and versions are sent (to OSV.dev, endoflife.date and, with `--nvd`, NVD), never to WorldSignals.
     `--dry-run` shows every request. It lives in `bin/scan.mjs`, loaded only when `scan` runs.
+- New: `scan --alerts` enrols this machine (with an enrolment token, the access key or the agent key) and sends its
+  list of names and versions to WorldSignals, after showing every line and asking (`--yes` for scripts). Requests
+  are signed with a machine key made here and kept in `~/.config/worldsignals/machine.json`, readable only by you.
+  `--schedule daily|weekly|off` re-sends it as you (launchd, systemd user timer or cron, Task Scheduler);
+  `--upload` is what the schedule runs; `--forget` deletes it at WorldSignals and stops the schedule.
 
 ## 0.5.2 (2026-10-29)
 

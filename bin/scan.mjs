@@ -4,6 +4,9 @@
 // What it reads (read-only, never as root, each with a time limit; a source that fails is listed as not checked):
 //   Linux: /etc/os-release, dpkg, rpm, apk, snap, flatpak.  macOS: sw_vers, Homebrew, the apps in /Applications.
 //   Everywhere: global npm and pip packages, and with --here the lockfiles in the current folder.
+// With --alerts (opt-in, after showing exactly what it will send): the list of names and versions goes to
+// WorldSignals, which matches it against every new vulnerability and alerts the account the machine is enrolled in;
+// --schedule keeps it current, --forget deletes it there. Without --alerts, nothing ever goes to WorldSignals.
 // What it sends, and to whom (--dry-run prints every request and sends none):
 //   - OSV.dev (Google): ecosystem, package name and version, for distro and language packages.
 //   - CISA: nothing; the exploited-vulnerabilities catalogue is downloaded whole and cached for 12 hours.
@@ -13,10 +16,11 @@
 // Matching rules: a package the distribution installed is checked only against that distribution's own advisories
 // (they know which fixes were backported), never by upstream version. The report groups vulnerabilities by the one
 // upgrade that fixes them, puts what is being exploited now first, and every finding is shown in full.
-import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { createHash, createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 export const OSV_API = "https://api.osv.dev/v1";
@@ -1123,7 +1127,19 @@ export const SCAN_HELP = (p = "ws") => `${p} scan [--report <file.md>] [--json] 
       --nvd             also check known desktop apps and Homebrew formulae against NVD (NIST), by version:
                         sends their names and versions there; slow without NVD_API_KEY (one app every 7 s)
       --inventory       only list what is installed; no network
-      --unchecked       list what couldn't be checked`;
+      --unchecked       list what couldn't be checked
+
+  Alerts (opt-in): WorldSignals keeps this machine's list of names and versions and tells your account when a new
+  vulnerability hits something on it. The list is shown before anything is sent.
+      --alerts          enrol this machine and send the list (asks first; with --dry-run, only shows it)
+      --token <token>   an enrolment token from the console (Machines → Add a machine); without one, the
+                        access key (WS_KEY) or the agent key on this device enrols it in that account
+      --label <name>    the machine's name in the console (default: none; set it there later)
+      --yes             send without asking, for scripts and device management
+      --schedule <daily|weekly|off>  re-check and send the list on a schedule, as you (no admin rights):
+                        launchd on macOS, a systemd user timer or cron on Linux, Task Scheduler on Windows
+      --upload          send the current list now (what the schedule runs)
+      --forget          delete this machine and its list from WorldSignals, and stop the schedule`;
 
 /** ws scan. `ctx` is ws.mjs's: fetch, env, out, err, platform, style, p; `sys` and `pause` stand in for tests. */
 export async function scan(argv, ctx) {
@@ -1132,7 +1148,23 @@ export async function scan(argv, ctx) {
   try {
     ({ values } = parseArgs({
       args: argv,
-      options: { report: { type: "string" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, here: { type: "boolean" }, nvd: { type: "boolean" }, inventory: { type: "boolean" }, unchecked: { type: "boolean" }, help: { type: "boolean", short: "h" } },
+      options: {
+        report: { type: "string" },
+        json: { type: "boolean" },
+        "dry-run": { type: "boolean" },
+        here: { type: "boolean" },
+        nvd: { type: "boolean" },
+        inventory: { type: "boolean" },
+        unchecked: { type: "boolean" },
+        alerts: { type: "boolean" },
+        token: { type: "string" },
+        label: { type: "string" },
+        yes: { type: "boolean" },
+        schedule: { type: "string" },
+        upload: { type: "boolean" },
+        forget: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
       strict: true,
     }));
   } catch (e) {
@@ -1143,10 +1175,14 @@ export async function scan(argv, ctx) {
     out(SCAN_HELP(p));
     return 0;
   }
-  const tty = style.err?.on && !values.json;
+  const api = (env.WS_API || "https://worldsignals.dev").replace(/\/$/, "");
+  if (values.forget) return forgetMachine({ ...ctx, api, platform, sys }, values);
+  if (values.schedule !== undefined) return scheduleScan({ ...ctx, api, platform, sys }, values.schedule);
+  const tty = style.err?.on && !values.json && !values.upload;
   const progress = (what) => tty && err(style.err.dim(`  reading ${what}…`));
   const started = now();
   const inv = await gather({ platform, env, here: values.here, cwd: ctx.cwd ?? process.cwd(), sys, progress });
+  if (values.alerts || values.upload) return sendInventory({ ...ctx, api, platform, sys }, values, inv);
 
   if (values.inventory) {
     if (values.json) out(JSON.stringify({ os: inv.os, sources: inv.sources, items: inv.items }));
@@ -1272,3 +1308,359 @@ function dedupeBy(list, key) {
   const seen = new Set();
   return list.filter((x) => !seen.has(key(x)) && seen.add(key(x)));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Alerts: this machine's list of names and versions, kept by WorldSignals and matched against every new
+// vulnerability. Opt-in, shown before it is sent, deleted with --forget.
+
+const configDirOf = (env) => join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config"), "worldsignals");
+/** Where the machine key is kept: one entry per server, readable only by you. */
+export const machinePath = (env = {}) => join(configDirOf(env), "machine.json");
+
+function readMachines(env) {
+  try {
+    return JSON.parse(readFileSync(machinePath(env), "utf8")).machines ?? {};
+  } catch {
+    return {};
+  }
+}
+export const readMachine = (env, api) => readMachines(env)[api] ?? null;
+
+function saveMachine(env, api, entry) {
+  const machines = readMachines(env);
+  if (entry) machines[api] = entry;
+  else delete machines[api];
+  const path = machinePath(env);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${JSON.stringify({ version: 1, machines }, null, 2)}\n`, { mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {}
+}
+
+/**
+ * Exactly what --alerts sends: per item its source, ecosystem, name, version, and for an app the product names it is
+ * matched by and how to update it. No file paths, user names, host name or serial number.
+ */
+export function uploadPayload(inv, version) {
+  const items = inv.items.map((i) => {
+    const app = appFor(i);
+    return {
+      source: i.source,
+      ...(i.ecosystem ? { ecosystem: i.ecosystem } : {}),
+      name: i.name,
+      version: i.version,
+      ...(i.label && i.label !== i.name ? { label: i.label } : {}),
+      ...(app ? { cpes: app.cpes, how: appHow(app, i) } : {}),
+    };
+  });
+  const os = { family: inv.os.family, version: inv.os.version ?? "", label: inv.os.label, ...(inv.os.ecosystem ? { ecosystem: inv.os.ecosystem } : {}) };
+  return { cli_version: version, os, items: dedupeBy(items, (i) => `${i.source}|${i.ecosystem ?? ""}|${i.name}|${i.version}`) };
+}
+
+/** The payload as it is shown before sending: one item per line, so every one can be read. */
+const shownPayload = (payload) =>
+  `{"cli_version": ${JSON.stringify(payload.cli_version)}, "os": ${JSON.stringify(payload.os)}, "items": [\n${payload.items.map((i) => `  ${JSON.stringify(i)}`).join(",\n")}\n]}`;
+
+/** A new Ed25519 key pair, as ws signup makes one: the public key raw and base64url, the private key as PEM. */
+function newMachineKey() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  return { publicKey: publicKey.export({ format: "jwk" }).x, privateKey: privateKey.export({ format: "pem", type: "pkcs8" }) };
+}
+
+let lastSigned = 0;
+/**
+ * The headers that sign a machine's request: the same signed string as an agent's (method, path and query,
+ * timestamp, the body's SHA-256), under X-WS-Machine.
+ */
+export function machineHeaders(method, url, body, privateKeyPem, machineId, now = Date.now()) {
+  lastSigned = Math.max(Math.floor(now), lastSigned + 1);
+  const timestamp = (lastSigned / 1000).toFixed(3);
+  const u = new URL(url);
+  const hash = body ? createHash("sha256").update(body).digest("base64url") : "";
+  const text = `${method.toUpperCase()} ${u.pathname}${u.search} ${timestamp} ${hash}`;
+  return { "x-ws-machine": machineId, "x-ws-timestamp": timestamp, "x-ws-signature": sign(null, Buffer.from(text), createPrivateKey(privateKeyPem)).toString("base64url") };
+}
+
+async function callApi(ctx, method, path, payload, headersFor) {
+  const url = `${ctx.api}${path}`;
+  const body = payload === undefined ? "" : JSON.stringify(payload);
+  const res = await ctx.fetch(url, {
+    method,
+    headers: { "user-agent": `ws-cli/${ctx.version ?? ""} (scan)`, ...(body ? { "content-type": "application/json" } : {}), ...headersFor(method, url, body) },
+    ...(body ? { body } : {}),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+const machineCall = (ctx, entry, method, path, payload) => callApi(ctx, method, path, payload, (m, url, body) => machineHeaders(m, url, body, entry.private_key, entry.machine_id));
+
+/** Yes or no from the person at the terminal; null without one. */
+async function askYes(stdin, question, err) {
+  if (!stdin) return null;
+  err(question);
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: stdin, terminal: false });
+  const line = await new Promise((resolve) => rl.once("line", resolve).once("close", () => resolve("")));
+  rl.close();
+  return /^y(es)?$/i.test(String(line).trim());
+}
+
+/** What the server's refusal means, in words. */
+function refusal(r, p) {
+  if (r.status === 402) return r.body.error ?? `This account's plan has no room for another machine. Remove one in the console, or upgrade.`;
+  if (r.status === 401 || r.status === 410) return r.body.error ?? `WorldSignals no longer knows this machine (it was removed in the console). ${p} scan --alerts enrols it again.`;
+  if (r.status === 403) return r.body.error ?? "That key may not enrol machines: it needs the Machines permission.";
+  return `WorldSignals answered ${r.status}${r.body.error ? `: ${r.body.error}` : ""}.`;
+}
+
+/** ws scan --alerts (enrol if needed, show, ask, send) and --upload (send, as the schedule does). */
+async function sendInventory(ctx, values, inv) {
+  const { env, out, err, p = "ws", api } = ctx;
+  const payload = uploadPayload(inv, ctx.version ?? "");
+  const reportUrl = `${api}/api/machine/report`;
+  let entry = readMachine(env, api);
+
+  if (values.upload) {
+    if (!entry) {
+      err(`This machine isn't enrolled for alerts. ${p} scan --alerts shows what it would send, then asks.`);
+      return 2;
+    }
+  } else {
+    out(`This is everything ${p} scan --alerts sends to WorldSignals (POST ${reportUrl}):\n`);
+    out(shownPayload(payload));
+    out(`\n${plural(payload.items.length, "item")}: for each, where it came from, its name and version (and, for apps, the product names it is matched by). No file paths, user names, host name or serial number.`);
+    out(`WorldSignals keeps the latest list for as long as the machine reports, matches it against every new vulnerability, and alerts the account it is enrolled in. ${p} scan --forget deletes it.`);
+    if (values["dry-run"]) {
+      out(`\n--dry-run: nothing was sent.`);
+      return 0;
+    }
+    if (!values.yes) {
+      const yes = await askYes(ctx.stdin, `\nSend it${entry ? "" : " and enrol this machine"}? [y/N] `, err);
+      if (yes === null) {
+        err(`Not sent: there is no terminal to ask. After checking the list (${p} scan --alerts --dry-run), add --yes to send it.`);
+        return 2;
+      }
+      if (!yes) {
+        out("Nothing was sent.");
+        return 0;
+      }
+    }
+  }
+
+  if (!entry) {
+    const credential = values.token ? { headers: () => ({}) } : ctx.credentialHeaders ? { headers: ctx.credentialHeaders } : null;
+    if (!credential || (!values.token && !ctx.credentialHeaders?.("POST", `${api}/api/machines/enrol`, "{}"))) {
+      err(
+        `To enrol this machine, make an enrolment token in the console (Machines → Add a machine) and run\n` +
+          `  ${p} scan --alerts --token <token>\n` +
+          `(or set WS_KEY to an access key with the Machines permission, or connect this device's agent: ${p} connect).`,
+      );
+      return 2;
+    }
+    const key = newMachineKey();
+    const enrolment = { public_key: key.publicKey, os: payload.os, ...(values.label ? { label: values.label } : {}), ...(values.token ? { token: values.token } : {}), consent: true };
+    const r = await callApi(ctx, "POST", "/api/machines/enrol", enrolment, (m, url, body) => (values.token ? {} : credential.headers(m, url, body) ?? {}));
+    if (r.status >= 400) {
+      err(`Not enrolled: ${refusal(r, p)}`);
+      return 1;
+    }
+    entry = { machine_id: r.body.machine_id, private_key: key.privateKey, label: r.body.label ?? values.label ?? null, account: r.body.account?.name ?? null, enrolled_at: new Date().toISOString() };
+    saveMachine(env, api, entry);
+  }
+
+  const r = await machineCall(ctx, entry, "POST", "/api/machine/report", payload);
+  if (r.status >= 400) {
+    err(`Not sent: ${refusal(r, p)}`);
+    return 1;
+  }
+  const b = r.body;
+  const name = b.label ?? entry.label ?? "This machine";
+  if (values.upload) {
+    out(`${new Date().toISOString()} sent ${plural(payload.items.length, "item")}${b.changes ? ` (${b.changes.added ?? 0} added, ${b.changes.removed ?? 0} removed, ${b.changes.upgraded ?? 0} upgraded)` : ""}.`);
+    return 0;
+  }
+  out(`\nSent. ${name} is enrolled${b.account?.name ?? entry.account ? ` in ${b.account?.name ?? entry.account}` : ""}: WorldSignals tells you when a new vulnerability hits something on it.`);
+  if (b.console_url) out(`See it in the console: ${b.console_url}`);
+  if (!entry.schedule) out(`To keep the list current: ${p} scan --schedule daily (as you, no admin rights).`);
+  return 0;
+}
+
+/** ws scan --forget: delete it at WorldSignals, then here, and stop the schedule. */
+async function forgetMachine(ctx, values) {
+  const { env, out, err, p = "ws", api } = ctx;
+  const entry = readMachine(env, api);
+  if (!entry) {
+    out("This machine isn't enrolled: WorldSignals holds nothing for it.");
+    return 0;
+  }
+  let r;
+  try {
+    r = await machineCall(ctx, entry, "DELETE", "/api/machine");
+  } catch (e) {
+    err(`Couldn't reach WorldSignals (${e.message}); nothing was deleted. Try again, or remove the machine in the console.`);
+    return 1;
+  }
+  if (r.status >= 400 && r.status !== 401 && r.status !== 404 && r.status !== 410) {
+    err(`Not deleted: ${refusal(r, p)}`);
+    return 1;
+  }
+  await scheduleScan({ ...ctx, quiet: true }, "off");
+  saveMachine(env, api, null);
+  out(`Deleted: WorldSignals no longer holds this machine or its list, the key on this device is gone${entry.schedule ? ", and the schedule is off" : ""}.`);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Scheduling, as the person who runs it: launchd (macOS), a systemd user timer or cron (Linux), Task Scheduler
+// (Windows). Each runs `ws scan --upload`, once a day or a week, at an hour picked from the machine id so that
+// machines don't all report at once.
+
+export const SCHEDULE_NAME = "dev.worldsignals.scan";
+const CRON_MARK = "# worldsignals-scan";
+
+/** An hour between 09:00 and 16:59 and a minute, stable for one machine. */
+export function scheduleTime(machineId = "") {
+  const h = createHash("sha256").update(machineId).digest();
+  return { hour: 9 + (h[0] % 8), minute: h[1] % 60 };
+}
+
+const xml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+export function launchdPlist({ node, script, every, hour, minute, log }) {
+  const when = `<dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer>${every === "weekly" ? "<key>Weekday</key><integer>1</integer>" : ""}</dict>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${SCHEDULE_NAME}</string>
+  <key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(script)}</string><string>scan</string><string>--upload</string></array>
+  <key>StartCalendarInterval</key>${when}
+  <key>StandardOutPath</key><string>${xml(log)}</string>
+  <key>StandardErrorPath</key><string>${xml(log)}</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+`;
+}
+
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+export function systemdUnits({ node, script, every, hour, minute }) {
+  const calendar = `${every === "weekly" ? "Mon " : ""}*-*-* ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`;
+  return {
+    service: `[Unit]\nDescription=WorldSignals: send this machine's software list for vulnerability alerts\n\n[Service]\nType=oneshot\nExecStart=${shq(node)} ${shq(script)} scan --upload\n`,
+    timer: `[Unit]\nDescription=WorldSignals scan, ${every}\n\n[Timer]\nOnCalendar=${calendar}\nPersistent=true\nRandomizedDelaySec=15min\n\n[Install]\nWantedBy=timers.target\n`,
+  };
+}
+
+/** The crontab with our line replaced (or removed, with every = off). */
+export function cronTable(current, { node, script, every, hour, minute }) {
+  const kept = String(current ?? "").split("\n").filter((l) => l && !l.includes(CRON_MARK));
+  if (every !== "off") kept.push(`${minute} ${hour} * * ${every === "weekly" ? "1" : "*"} ${shq(node)} ${shq(script)} scan --upload >/dev/null 2>&1 ${CRON_MARK}`);
+  return kept.length ? `${kept.join("\n")}\n` : "";
+}
+
+export function schtasksArgs({ node, script, every, hour, minute }) {
+  if (every === "off") return ["/Delete", "/F", "/TN", "WorldSignals scan"];
+  const at = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  return ["/Create", "/F", "/SC", every === "weekly" ? "WEEKLY" : "DAILY", ...(every === "weekly" ? ["/D", "MON"] : []), "/ST", at, "/TN", "WorldSignals scan", "/TR", `"${node}" "${script}" scan --upload`];
+}
+
+/** Runs a program with text on its stdin (crontab -). */
+function runWithInput(command, args, input) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+    child.stdin.end(input);
+  });
+}
+
+/** ws scan --schedule daily|weekly|off */
+async function scheduleScan(ctx, every) {
+  const { env, out, err, p = "ws", api, platform = process.platform, quiet = false } = ctx;
+  if (!["daily", "weekly", "off"].includes(every)) {
+    err(`--schedule is daily, weekly or off.`);
+    return 2;
+  }
+  const entry = readMachine(env, api);
+  if (every !== "off" && !entry) {
+    err(`This machine isn't enrolled yet: ${p} scan --alerts first (it shows what it sends and asks).`);
+    return 2;
+  }
+  const node = ctx.nodePath ?? process.execPath;
+  const script = ctx.scriptPath ?? process.argv[1] ?? "";
+  if (every !== "off" && /[\\/]_npx[\\/]/.test(script)) {
+    err(`npx runs ws from a temporary folder that won't last. Install it first, then schedule:\n  npm install -g worldsignals\n  ws scan --schedule ${every}`);
+    return 2;
+  }
+  const run = ctx.sys?.run ?? runProgram;
+  const write = ctx.sys?.write ?? ((path, text) => (mkdirSync(dirname(path), { recursive: true }), writeFileSync(path, text)));
+  const remove = ctx.sys?.remove ?? ((path) => rmSync(path, { force: true }));
+  const withInput = ctx.sys?.runWithInput ?? runWithInput;
+  const home = env.HOME || homedir();
+  const { hour, minute } = scheduleTime(entry?.machine_id);
+  const spec = { node, script, every, hour, minute };
+  let how;
+
+  if (platform === "darwin") {
+    const plist = join(home, "Library", "LaunchAgents", `${SCHEDULE_NAME}.plist`);
+    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+    await run("launchctl", ["bootout", `gui/${uid}`, plist]);
+    if (every === "off") remove(plist);
+    else {
+      write(plist, launchdPlist({ ...spec, log: join(home, "Library", "Logs", "worldsignals-scan.log") }));
+      if ((await run("launchctl", ["bootstrap", `gui/${uid}`, plist])) === null) {
+        err(`Couldn't load ${plist} into launchd. Load it yourself with: launchctl bootstrap gui/${uid} ${plist}`);
+        return 1;
+      }
+    }
+    how = `launchd (${plist})`;
+  } else if (platform === "linux") {
+    const dir = join(env.XDG_CONFIG_HOME || join(home, ".config"), "systemd", "user");
+    const systemd = (await run("systemctl", ["--user", "show-environment"])) !== null;
+    if (systemd) {
+      await run("systemctl", ["--user", "disable", "--now", "worldsignals-scan.timer"]);
+      if (every === "off") {
+        remove(join(dir, "worldsignals-scan.service"));
+        remove(join(dir, "worldsignals-scan.timer"));
+        await run("systemctl", ["--user", "daemon-reload"]);
+      } else {
+        const units = systemdUnits(spec);
+        write(join(dir, "worldsignals-scan.service"), units.service);
+        write(join(dir, "worldsignals-scan.timer"), units.timer);
+        await run("systemctl", ["--user", "daemon-reload"]);
+        if ((await run("systemctl", ["--user", "enable", "--now", "worldsignals-scan.timer"])) === null) {
+          err("Couldn't start the systemd user timer (systemctl --user enable --now worldsignals-scan.timer).");
+          return 1;
+        }
+      }
+      how = "a systemd user timer (worldsignals-scan.timer)";
+    } else {
+      const current = (await run("crontab", ["-l"])) ?? "";
+      if (!(await withInput("crontab", ["-"], cronTable(current, spec)))) {
+        err("Couldn't update your crontab (crontab -).");
+        return 1;
+      }
+      how = "your crontab";
+    }
+  } else if (platform === "win32") {
+    const ok = (await run("schtasks", schtasksArgs(spec))) !== null;
+    if (!ok && every !== "off") {
+      err("Couldn't create the task in Task Scheduler (schtasks /Create).");
+      return 1;
+    }
+    how = "Task Scheduler (WorldSignals scan)";
+  } else {
+    err(`Scheduling isn't supported on ${platform}: run ${p} scan --upload from your own scheduler.`);
+    return 2;
+  }
+
+  if (entry) saveMachine(env, api, { ...entry, schedule: every === "off" ? null : every });
+  if (!quiet) {
+    if (every === "off") out(`The schedule is off (${how}).`);
+    else out(`Scheduled ${every} at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}${every === "weekly" ? " on Mondays" : ""}, as you, with ${how}: it re-reads what is installed and sends the list. ${p} scan --schedule off stops it.`);
+  }
+  return 0;
+}
+
