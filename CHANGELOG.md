@@ -5,6 +5,9 @@ Versions of the `worldsignals` package on npm. Not every tagged or committed ver
 
 ## Unreleased
 
+- New package: `worldsignals-scan` (`scan/`) is the scanner on its own, for people who want only the security check. It
+  ships the same `ws.mjs` and `scan.mjs` and is released from the same tag at the same version. `npx worldsignals-scan`
+  is `ws scan`, and `worldsignals-scan machine …` the machine commands.
 - New: `scan` checks the software installed on this machine against public vulnerability databases, and says what
   to update in plain language: what is exploited now first (CISA KEV), then the one upgrade that fixes each group,
   then what no longer gets security fixes (endoflife.date).

@@ -200,6 +200,8 @@ command.
 npx worldsignals scan
 ```
 
+The scanner is also published on its own, as [`worldsignals-scan`](https://www.npmjs.com/package/worldsignals-scan) (`npx worldsignals-scan`): the same code, for people who want only the security check.
+
 `scan` lists what is installed and checks it against public vulnerability databases. It reads Homebrew and the
 apps in `/Applications` on macOS; dpkg, rpm, apk, snap and flatpak on Linux; and global npm and pip packages
 everywhere. Then it says, in plain language:

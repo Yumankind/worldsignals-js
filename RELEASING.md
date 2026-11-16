@@ -6,9 +6,21 @@ From 0.4.3 on, the `worldsignals` package is only published by
 [npm provenance](https://docs.npmjs.com/generating-provenance-statements) statement
 that links it to the commit and workflow run that built it.
 
+## Two packages, one version
+
+`worldsignals` (the CLI) and `worldsignals-scan` (`scan/`, the security scanner on its own) release together from
+the same tag. Bump both `package.json` and `scan/package.json`; the check job fails if they differ.
+`worldsignals-scan` ships the same `bin/ws.mjs` and `bin/scan.mjs`: its prepack (`scripts/copy-scan.mjs`) copies
+them in.
+
+**Before the first release of `worldsignals-scan`:** npm configures a trusted publisher per package, and only for
+a package that exists. So publish its first version once by hand, from a logged-in account with 2FA
+(`cd scan && npm publish --access public`). Then add this repository's `release` workflow, with environment `npm`,
+as its trusted publisher on npmjs.com, as for `worldsignals`.
+
 ## Cutting a release
 
-1. On `main`, bump the version in **both** `package.json` and `VERSION` in `bin/ws.mjs`
+1. On `main`, bump the version in `package.json`, `scan/package.json` and `VERSION` in `bin/ws.mjs`
    (the tests fail if they differ), and add the version to `CHANGELOG.md`:
 
    ```sh

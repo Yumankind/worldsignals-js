@@ -1,0 +1,58 @@
+{
+  "name": "worldsignals-scan",
+  "version": "0.5.5",
+  "description": "Check this computer for known and actively exploited vulnerabilities, free: one command, the fix for each in plain language, nothing sent without asking. Homebrew, macOS apps, apt/rpm/apk packages, npm and pip. Optional alerts when a new CVE hits one of your machines.",
+  "type": "module",
+  "bin": {
+    "worldsignals-scan": "bin/worldsignals-scan.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "prepack": "node ../scripts/copy-scan.mjs"
+  },
+  "keywords": [
+    "security",
+    "vulnerability-scanner",
+    "vulnerability",
+    "cve",
+    "kev",
+    "cisa-kev",
+    "exploited",
+    "osv",
+    "nvd",
+    "patch",
+    "patch-management",
+    "end-of-life",
+    "audit",
+    "sbom",
+    "inventory",
+    "homebrew",
+    "macos",
+    "linux",
+    "sysadmin",
+    "msp",
+    "cli"
+  ],
+  "homepage": "https://worldsignals.dev/scan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yumankind/worldsignals-js.git",
+    "directory": "scan"
+  },
+  "bugs": {
+    "url": "https://github.com/Yumankind/worldsignals-js/issues"
+  },
+  "author": "Yumankind OÜ <hello@worldsignals.dev> (https://worldsignals.dev)",
+  "license": "MIT"
+}
