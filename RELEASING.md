@@ -16,7 +16,8 @@ them in.
 **Before the first release of `worldsignals-scan`:** npm configures a trusted publisher per package, and only for
 a package that exists. So publish its first version once by hand, from a logged-in account with 2FA
 (`cd scan && npm publish --access public`). Then add this repository's `release` workflow, with environment `npm`,
-as its trusted publisher on npmjs.com, as for `worldsignals`.
+as its trusted publisher on npmjs.com, as for `worldsignals`. Until it exists, the release workflow
+stages `worldsignals` and skips `worldsignals-scan` with a warning.
 
 ## Cutting a release
 

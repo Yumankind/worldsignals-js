@@ -3,7 +3,7 @@
 Versions of the `worldsignals` package on npm. Not every tagged or committed version was published: 0.2.0, 0.2.1,
 0.4.0 and 0.4.1 never reached npm, and their changes first shipped in the next version that did.
 
-## Unreleased
+## 0.6.0 (2026-11-16)
 
 - New package: `worldsignals-scan` (`scan/`) is the scanner on its own, for people who want only the security check. It
   ships the same `ws.mjs` and `scan.mjs` and is released from the same tag at the same version. `npx worldsignals-scan`

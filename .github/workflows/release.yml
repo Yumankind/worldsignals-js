@@ -92,8 +92,21 @@ jobs:
       - name: What ships in worldsignals-scan
         working-directory: scan
         run: npm pack --dry-run
+      # npm only takes a trusted publisher for a package that exists, so its first version is published by hand
+      # (RELEASING.md). Until then this step says so and skips it, rather than failing the release of worldsignals.
       - working-directory: scan
-        run: npm stage publish --provenance --access public
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! npm view worldsignals-scan name >/dev/null 2>&1; then
+            echo "::warning::worldsignals-scan isn't on npm yet: publish ${TAG#v} by hand from this tag (RELEASING.md), then add the trusted publisher"
+            exit 0
+          fi
+          if npm view "worldsignals-scan@${TAG#v}" version >/dev/null 2>&1; then
+            echo "::notice::worldsignals-scan ${TAG#v} is already on npm"
+            exit 0
+          fi
+          npm stage publish --provenance --access public
 
   release:
     needs: publish
