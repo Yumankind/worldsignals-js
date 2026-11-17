@@ -13,11 +13,17 @@ the same tag. Bump both `package.json` and `scan/package.json`; the check job fa
 `worldsignals-scan` ships the same `bin/ws.mjs` and `bin/scan.mjs`: its prepack (`scripts/copy-scan.mjs`) copies
 them in.
 
-**Before the first release of `worldsignals-scan`:** npm configures a trusted publisher per package, and only for
-a package that exists. So publish its first version once by hand, from a logged-in account with 2FA
-(`cd scan && npm publish --access public`). Then add this repository's `release` workflow, with environment `npm`,
-as its trusted publisher on npmjs.com, as for `worldsignals`. Until it exists, the release workflow
-stages `worldsignals` and skips `worldsignals-scan` with a warning.
+**A new package's first version is published by hand.** npm configures a trusted publisher per package, and only
+for a package that exists. So publish its first version once from a logged-in account with 2FA, from the release
+tag: `cd scan && npm publish --access public --provenance=false`. The `--provenance=false` is needed because
+`publishConfig.provenance` is `true` and provenance can only be generated in CI; that first version has no
+provenance. Then add this repository's `release` workflow, with environment `npm` and no allowed actions checked,
+as its trusted publisher on npmjs.com, as for `worldsignals`. While the package doesn't exist, the release workflow
+stages `worldsignals` and skips `worldsignals-scan` with a warning; once it exists, the workflow stages both, and
+staging `worldsignals-scan` fails until its trusted publisher is set.
+
+`worldsignals-scan` 0.6.0 was published this way on 17 Nov 2026, from tag `v0.6.0` (npm also created a placeholder
+version, `0.0.0-stage`).
 
 ## Cutting a release
 
@@ -142,3 +148,6 @@ and 0.4.1 were never published (see [CHANGELOG.md](CHANGELOG.md)). `v0.3.2`, `v0
 `v0.4.1` and `v0.4.2` are tagged; the published 0.4.2 tarball is byte-identical to
 `npm pack` of commit `367fdac` (tag `v0.4.2`). Those tags were pushed before this
 workflow existed, so they never run it.
+
+`worldsignals-scan` 0.6.0, its first version, was published by hand without provenance (see above). Its tarball
+is the `npm pack` of `scan/` at tag `v0.6.0` (shasum `d88cbe5e952e47d975e4e4719feb3366bba33f35`).
